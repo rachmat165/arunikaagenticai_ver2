@@ -3,6 +3,10 @@
 .env.local
 .env.*.local
 config.local.yaml
+Dewi3A-bot.txt
+
+# Portable Python embeddable (download separately from python.org)
+python/
 
 # Python
 __pycache__/
