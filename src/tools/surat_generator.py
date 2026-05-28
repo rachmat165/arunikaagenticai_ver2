@@ -17,10 +17,12 @@ from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT, TA_JUSTIFY
 from reportlab.platypus import (
     SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle,
-    HRFlowable, KeepTogether,
+    HRFlowable, KeepTogether, Image,
 )
 from reportlab.platypus.flowables import Flowable
 from reportlab.pdfgen import canvas as pdf_canvas
+
+LOGO_PATH = Path(__file__).parent.parent.parent / "assets" / "logo.png"
 
 # ── Brand Colors ──────────────────────────────────────────────────────────────
 PRIMARY    = HexColor("#FFB317")   # Kuning ATG
@@ -240,7 +242,10 @@ class SuratGenerator:
 
     # ── Letterhead (header PDF) ───────────────────────────────────────────────
     def _build_header(self, st: dict) -> list:
-        logo = ATGLogoFlowable(size=62)
+        if LOGO_PATH.exists():
+            logo: Flowable = Image(str(LOGO_PATH), width=62, height=62)
+        else:
+            logo = ATGLogoFlowable(size=62)
 
         header_right = [
             Paragraph(COMPANY["name"], st["company_name"]),

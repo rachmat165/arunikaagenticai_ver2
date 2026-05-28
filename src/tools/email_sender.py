@@ -1,9 +1,16 @@
 import asyncio
+import os
 import smtplib
+import uuid
+from datetime import datetime, timezone
+from email import encoders
+from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from email.utils import formataddr
+from email.utils import formataddr, formatdate
 from src.config import settings
+
+DISPLAY_NAME = "PT. Arunika Teknologi Global"
 
 
 def _build_message(
@@ -11,33 +18,28 @@ def _build_message(
     subject: str,
     body: str,
     cc: str | list[str] | None = None,
-    reply_to: str | None = None,
     attachment_path: str | None = None,
 ) -> tuple[MIMEMultipart, list[str]]:
-    # Use "mixed" when there's an attachment, otherwise "alternative"
     msg = MIMEMultipart("mixed" if attachment_path else "alternative")
-    msg["From"] = formataddr(("Corsec ATG", settings.email_user))
-    msg["To"] = ", ".join(to) if isinstance(to, list) else to
-    msg["Subject"] = subject
+    msg["From"]       = formataddr((DISPLAY_NAME, settings.email_user))
+    msg["To"]         = ", ".join(to) if isinstance(to, list) else to
+    msg["Subject"]    = subject
+    msg["Date"]       = formatdate(localtime=True)
+    msg["Message-ID"] = f"<{uuid.uuid4().hex}@arunika2045.com>"
+    msg["Reply-To"]   = settings.email_user
     if cc:
         msg["Cc"] = ", ".join(cc) if isinstance(cc, list) else cc
-    if reply_to:
-        msg["Reply-To"] = reply_to
 
     msg.attach(MIMEText(body, "plain", "utf-8"))
 
-    if attachment_path:
-        from email.mime.base import MIMEBase
-        from email import encoders
-        import os
+    if attachment_path and os.path.exists(attachment_path):
         with open(attachment_path, "rb") as f:
-            part = MIMEBase("application", "octet-stream")
+            part = MIMEBase("application", "pdf")
             part.set_payload(f.read())
         encoders.encode_base64(part)
-        part.add_header(
-            "Content-Disposition",
-            f'attachment; filename="{os.path.basename(attachment_path)}"',
-        )
+        fname = os.path.basename(attachment_path)
+        part.add_header("Content-Disposition", f'attachment; filename="{fname}"')
+        part.add_header("Content-Type", f'application/pdf; name="{fname}"')
         msg.attach(part)
 
     recipients: list[str] = list(to) if isinstance(to, list) else [to]
@@ -56,9 +58,9 @@ async def send_email(
     """Send email via SMTP SSL. Returns {'success': True} or {'error': str}."""
 
     def _send():
-        msg, recipients = _build_message(to, subject, body, cc,
-                                         attachment_path=attachment_path)
+        msg, recipients = _build_message(to, subject, body, cc, attachment_path)
         with smtplib.SMTP_SSL(settings.email_host, settings.email_port, timeout=30) as server:
+            server.ehlo()
             server.login(settings.email_user, settings.email_password)
             server.sendmail(settings.email_user, recipients, msg.as_string())
 
@@ -77,6 +79,7 @@ async def test_smtp_connection() -> dict:
     """Test SMTP connection without sending email."""
     def _test():
         with smtplib.SMTP_SSL(settings.email_host, settings.email_port, timeout=10) as server:
+            server.ehlo()
             server.login(settings.email_user, settings.email_password)
             return server.noop()
 
