@@ -17,12 +17,21 @@ class TelegramGateway:
         self.rnd_module = RndHandler()
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        user_id = update.effective_user.id
-        if not await check_user_allowed(user_id):
-            await update.message.reply_text("❌ Anda tidak diizinkan menggunakan bot ini.")
-            return
+        user_id = update.effective_user.id if update.effective_user else None
+        print(
+            f"[TG_DEBUG] start() called user_id={user_id} text={getattr(update.message,'text',None)!r}",
+            flush=True,
+        )
 
-        welcome_text = """👋 Selamat datang di REFLECTIVE KOALA!
+        try:
+            logger.info("Telegram /start received user_id=%s", user_id)
+
+            if not await check_user_allowed(user_id):
+                if update.message:
+                    await update.message.reply_text("❌ Anda tidak diizinkan menggunakan bot ini.")
+                return
+
+            welcome_text = """👋 Selamat datang di REFLECTIVE KOALA!
 
 AI Agent komprehensif untuk PT. Arunika Teknologi Global.
 
@@ -41,7 +50,15 @@ Pilih fungsi:
 
 Atau ketik pertanyaan bebas! 🤖"""
 
-        await update.message.reply_text(welcome_text)
+            if not update.message:
+                raise RuntimeError("update.message is None in start() handler")
+
+            await update.message.reply_text(welcome_text)
+
+        except Exception as e:
+            logger.exception("Telegram /start failed: %s", str(e))
+            if update.message:
+                await update.message.reply_text(f"❌ /start error: {type(e).__name__}: {e}")
 
     async def help_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
@@ -156,11 +173,19 @@ Atau ketik pertanyaan bebas! 🤖"""
         async with aiosqlite.connect(self.db_path) as db:
             await set_user_model(db, user_id, provider, model_name)
 
-        await self.agent.init_model(provider, model_name)
+        try:
+            await self.agent.init_model(provider, model_name)
+        except Exception as e:
+            await query.edit_message_text(
+                f"❌ Gagal mengaktifkan model.\n\nProvider: {provider}\nModel: {model_name}\n\nError: {str(e)}"
+            )
+            return
 
-        display = (ANTHROPIC_MODELS.get(model_name)
-                   or OPENROUTER_MODELS.get(model_name)
-                   or f"🖥️ {model_name} (Lokal)")
+        display = (
+            (ANTHROPIC_MODELS.get(model_name) if provider == "anthropic" else None)
+            or (OPENROUTER_MODELS.get(model_name) if provider == "openrouter" else None)
+            or (f"🖥️ {model_name} (Lokal)" if provider == "lmstudio" else f"🖥️ {model_name}")
+        )
         await query.edit_message_text(f"✅ Model diatur ke: {display}")
 
     async def _send_long(self, update: Update, text: str):
@@ -185,6 +210,7 @@ Atau ketik pertanyaan bebas! 🤖"""
 
         user_message = update.message.text.strip()
         rnd_state = context.user_data.get("rnd_state")
+        logger.info("Telegram text_message received user_id=%s text=%r rnd_state=%r", user_id, user_message, rnd_state)
 
         # ── R&D state machine ──────────────────────────────────────────────
         if rnd_state:
@@ -510,10 +536,11 @@ Atau ketik pertanyaan bebas! 🤖"""
         if not await check_user_allowed(user_id):
             return
 
-        async with aiosqlite.connect(self.db_path) as db:
-            current_provider, current_model = await get_user_model(db, user_id)
-
-        msg = await update.message.reply_text("⏳ Mengambil daftar model dari Anthropic API...")
+        # Samakan alur dengan /settings:
+        # tampilkan provider (Anthropic / OpenRouter / LM Studio) dulu,
+        # lalu provider_callback akan menampilkan daftar modelnya.
+        await self.settings(update, context)
+        return
 
         try:
             models = await fetch_anthropic_models(settings.anthropic_api_key, settings.anthropic_base_url)
@@ -543,16 +570,24 @@ Atau ketik pertanyaan bebas! 🤖"""
 
         user_id = query.from_user.id
         model_id = query.data.split("_", 1)[1]
+        provider = context.user_data.get("selected_provider", "anthropic")
 
         async with aiosqlite.connect(self.db_path) as db:
-            await set_user_model(db, user_id, "anthropic", model_id)
+            await set_user_model(db, user_id, provider, model_id)
 
-        await self.agent.init_model("anthropic", model_id)
+        await self.agent.init_model(provider, model_id)
+
+        display = (
+            (ANTHROPIC_MODELS.get(model_id) if provider == "anthropic" else None)
+            or (OPENROUTER_MODELS.get(model_id) if provider == "openrouter" else None)
+            or f"🖥️ {model_id} (Lokal)" if provider == "lmstudio"
+            else f"🖥️ {model_id}"
+        )
 
         await query.edit_message_text(
             f"✅ *Model berhasil diganti!*\n\n"
-            f"🤖 Model aktif: `{model_id}`\n"
-            f"🔌 Provider: Anthropic\n\n"
+            f"🤖 Model aktif: `{display}`\n"
+            f"🔌 Provider: *{provider}*\n\n"
             f"Sekarang Anda bisa langsung chat menggunakan model baru.",
             parse_mode="Markdown"
         )
@@ -639,7 +674,30 @@ Atau ketik pertanyaan bebas! 🤖"""
             feature = callback_data.split("_")[1]
             await query.edit_message_text(f"⏳ Fitur Automation: {feature} akan segera diimplementasikan!")
 
+    async def error_handler(self, update: object, context: ContextTypes.DEFAULT_TYPE):
+        # Log exception agar bisa dilacak kenapa pesan tidak memunculkan reply.
+        logger.exception("Telegram handler error: update=%s exc=%s", update, context.error)
+
+    async def debug_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        # Fallback untuk mendeteksi command yang tidak ter-match ke handler spesifik.
+        msg = update.message
+        if not msg or not msg.text:
+            return
+        text = msg.text.strip()
+        user_id = update.effective_user.id if update.effective_user else None
+        print(f"[TG_DEBUG] debug_command called user_id={user_id} text={text!r}", flush=True)
+        logger.info("Telegram debug_command received user_id=%s text=%r", user_id, text)
+
+        # Reply supaya kita tahu command memang masuk ke fallback ini.
+        try:
+            await msg.reply_text(f"🧪 DEBUG: command diterima di fallback: {text}")
+        except Exception:
+            # jangan sampai fallback error mengganggu handler lain
+            pass
+
     def setup_handlers(self, app: Application):
+        app.add_error_handler(self.error_handler)
+
         app.add_handler(CommandHandler("start", self.start))
         app.add_handler(CommandHandler("help", self.help_cmd))
         app.add_handler(CommandHandler("settings", self.settings))
@@ -664,3 +722,5 @@ Atau ketik pertanyaan bebas! 🤖"""
         app.add_handler(CallbackQueryHandler(self.module_callback, pattern="^(sek_|rnd_|sosmed_|res_|auto_)"))
 
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.text_message))
+        # Jika ada command yang tidak ter-match handler spesifik, akan ketahuan lewat log di debug_command.
+        app.add_handler(MessageHandler(filters.COMMAND, self.debug_command))

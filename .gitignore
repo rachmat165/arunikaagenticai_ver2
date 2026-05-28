@@ -30,8 +30,11 @@ wheels/
 .installed.cfg
 *.egg
 venv/
+.venv*/
 ENV/
 env/
+temp/
+arunikaagenticai_ver2/
 
 # IDE
 .vscode/

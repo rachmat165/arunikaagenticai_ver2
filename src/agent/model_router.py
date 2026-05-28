@@ -1,6 +1,6 @@
 import httpx
 from typing import Optional, Tuple
-from src.config import settings
+from src.config import settings, Settings
 
 ANTHROPIC_MODELS = {
     "claude-haiku-4-5-20251001": "Haiku 4.5 (Cepat & Murah)",
@@ -34,10 +34,17 @@ MODEL_PRICING = {
 }
 
 
+def _normalize_lmstudio_base_url(base_url: str) -> str:
+    base_url = base_url.rstrip("/")
+    if base_url.lower().endswith("/v1"):
+        return base_url[:-3]
+    return base_url
+
 async def fetch_lmstudio_models(base_url: str = "http://localhost:1234") -> list:
     """Fetch available models from LM Studio local server. Returns list of (id, display_name)."""
     try:
-        async with httpx.AsyncClient(base_url=base_url, timeout=5.0) as client:
+        normalized = _normalize_lmstudio_base_url(base_url)
+        async with httpx.AsyncClient(base_url=normalized, timeout=5.0) as client:
             response = await client.get("/v1/models")
             if response.status_code != 200:
                 return []
@@ -94,12 +101,22 @@ class ModelRouter:
                 timeout=120.0
             )
         elif self.provider == "openrouter":
-            if not settings.openrouter_api_key:
+            cfg = settings
+            if not cfg.openrouter_api_key:
+                # Bot process bisa saja sudah berjalan sebelum .env diubah.
+                # Re-load Settings supaya key terbaru kebaca tanpa restart.
+                try:
+                    cfg = Settings()
+                except Exception:
+                    cfg = settings
+
+            if not cfg.openrouter_api_key:
                 raise ValueError("OPENROUTER_API_KEY tidak dikonfigurasi. Atur di file .env")
+
             self.client = httpx.AsyncClient(
-                base_url=settings.openrouter_base_url,
+                base_url=cfg.openrouter_base_url,
                 headers={
-                    "Authorization": f"Bearer {settings.openrouter_api_key}",
+                    "Authorization": f"Bearer {cfg.openrouter_api_key}",
                     "Content-Type": "application/json",
                     "HTTP-Referer": "https://arunika2045.com",
                     "X-Title": "Reflective Koala ATG",
@@ -108,6 +125,7 @@ class ModelRouter:
             )
         elif self.provider == "lmstudio":
             lmstudio_url = getattr(settings, "lmstudio_base_url", "http://localhost:1234")
+            lmstudio_url = _normalize_lmstudio_base_url(lmstudio_url)
             self.client = httpx.AsyncClient(
                 base_url=lmstudio_url,
                 headers={"Content-Type": "application/json"},
