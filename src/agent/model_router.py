@@ -16,6 +16,10 @@ OPENROUTER_MODELS = {
     "deepseek/deepseek-chat": "Deepseek Chat",
 }
 
+# LM Studio models are dynamic — fetched from local server at runtime
+# This dict is used as fallback when server is offline
+LMSTUDIO_MODELS: dict = {}
+
 # USD per 1M tokens (input, output)
 MODEL_PRICING = {
     "claude-haiku-4-5-20251001": (0.80, 4.00),
@@ -28,6 +32,19 @@ MODEL_PRICING = {
     "mistralai/mistral-large":            (2.00, 6.00),
     "deepseek/deepseek-chat":             (0.27, 1.10),
 }
+
+
+async def fetch_lmstudio_models(base_url: str = "http://localhost:1234") -> list:
+    """Fetch available models from LM Studio local server. Returns list of (id, display_name)."""
+    try:
+        async with httpx.AsyncClient(base_url=base_url, timeout=5.0) as client:
+            response = await client.get("/v1/models")
+            if response.status_code != 200:
+                return []
+            data = response.json()
+            return [(m["id"], m.get("id", m["id"])) for m in data.get("data", [])]
+    except Exception:
+        return []
 
 
 async def fetch_anthropic_models(api_key: str, base_url: str = "https://api.anthropic.com") -> list:
@@ -89,6 +106,13 @@ class ModelRouter:
                 },
                 timeout=120.0
             )
+        elif self.provider == "lmstudio":
+            lmstudio_url = getattr(settings, "lmstudio_base_url", "http://localhost:1234")
+            self.client = httpx.AsyncClient(
+                base_url=lmstudio_url,
+                headers={"Content-Type": "application/json"},
+                timeout=300.0
+            )
 
     async def close_client(self):
         if self.client:
@@ -120,6 +144,8 @@ class ModelRouter:
             return await self._call_anthropic(clean_messages, system, temperature, max_tokens)
         elif self.provider == "openrouter":
             return await self._call_openrouter(clean_messages, system, temperature, max_tokens)
+        elif self.provider == "lmstudio":
+            return await self._call_lmstudio(clean_messages, system, temperature, max_tokens)
         else:
             raise ValueError(f"Provider tidak dikenal: {self.provider}")
 
@@ -173,7 +199,33 @@ class ModelRouter:
 
         return text, {"input_tokens": input_tokens, "output_tokens": output_tokens, "cost_usd": cost}
 
+    async def _call_lmstudio(self, messages: list, system: str,
+                              temperature: float, max_tokens: int) -> Tuple[str, dict]:
+        all_messages = []
+        if system:
+            all_messages.append({"role": "system", "content": system})
+        all_messages.extend(messages)
+
+        response = await self.client.post(
+            "/v1/chat/completions",
+            json={"model": self.model_name, "max_tokens": max_tokens,
+                  "temperature": temperature, "messages": all_messages}
+        )
+        if response.status_code != 200:
+            raise RuntimeError(f"LM Studio error {response.status_code}: {response.text}")
+
+        data = response.json()
+        text = data["choices"][0]["message"]["content"]
+
+        usage = data.get("usage", {})
+        input_tokens = usage.get("prompt_tokens", 0)
+        output_tokens = usage.get("completion_tokens", 0)
+
+        return text, {"input_tokens": input_tokens, "output_tokens": output_tokens, "cost_usd": 0.0}
+
     def get_model_display(self) -> str:
         if self.provider == "anthropic":
             return ANTHROPIC_MODELS.get(self.model_name, self.model_name)
+        if self.provider == "lmstudio":
+            return f"🖥️ {self.model_name} (Lokal)"
         return OPENROUTER_MODELS.get(self.model_name, self.model_name)

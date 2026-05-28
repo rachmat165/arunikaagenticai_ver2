@@ -16,6 +16,8 @@ class Settings(BaseSettings):
     openrouter_api_key: str = ""
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
 
+    lmstudio_base_url: str = "http://localhost:1234"
+
     supabase_url: str = ""
     supabase_key: str = ""
     supabase_service_key: str = ""

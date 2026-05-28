@@ -1,7 +1,7 @@
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 from src.auth import check_user_allowed
-from src.agent import ATGAgent, ANTHROPIC_MODELS, OPENROUTER_MODELS, fetch_anthropic_models
+from src.agent import ATGAgent, ANTHROPIC_MODELS, OPENROUTER_MODELS, fetch_anthropic_models, fetch_lmstudio_models
 from src.database import set_user_model, get_user_model, get_user_usage, get_usage_by_model
 from src.config import settings
 from src.modules.rnd import RndHandler
@@ -97,6 +97,7 @@ Atau ketik pertanyaan bebas! 🤖"""
         keyboard = [
             [InlineKeyboardButton("🤖 Anthropic Claude", callback_data="provider_anthropic")],
             [InlineKeyboardButton("🌐 OpenRouter", callback_data="provider_openrouter")],
+            [InlineKeyboardButton("🖥️ LM Studio (Lokal)", callback_data="provider_lmstudio")],
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await update.message.reply_text("Pilih provider AI:", reply_markup=reply_markup)
@@ -107,19 +108,42 @@ Atau ketik pertanyaan bebas! 🤖"""
 
         user_id = query.from_user.id
         provider = query.data.split("_")[1]
+        context.user_data["selected_provider"] = provider
 
-        if provider == "anthropic":
+        if provider == "lmstudio":
+            await query.edit_message_text("⏳ Mengambil model dari LM Studio lokal...")
+            lmstudio_url = getattr(settings, "lmstudio_base_url", "http://localhost:1234")
+            lms_models = await fetch_lmstudio_models(lmstudio_url)
+            if not lms_models:
+                await query.edit_message_text(
+                    "❌ *LM Studio tidak terdeteksi!*\n\n"
+                    "Pastikan:\n"
+                    "1. LM Studio sudah diinstall & dibuka\n"
+                    "2. Klik tab *Local Server* → *Start Server*\n"
+                    "3. Server berjalan di `http://localhost:1234`\n\n"
+                    "Setelah server aktif, coba lagi /settings",
+                    parse_mode="Markdown"
+                )
+                return
+            keyboard = [
+                [InlineKeyboardButton(f"🖥️ {mid}", callback_data=f"model_{mid}")]
+                for mid, _ in lms_models
+            ]
+        elif provider == "anthropic":
             models = ANTHROPIC_MODELS
+            keyboard = [
+                [InlineKeyboardButton(display, callback_data=f"model_{model}")]
+                for model, display in models.items()
+            ]
         else:
             models = OPENROUTER_MODELS
+            keyboard = [
+                [InlineKeyboardButton(display, callback_data=f"model_{model}")]
+                for model, display in models.items()
+            ]
 
-        keyboard = [
-            [InlineKeyboardButton(display, callback_data=f"model_{model}")]
-            for model, display in models.items()
-        ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text(f"Pilih model {provider}:", reply_markup=reply_markup)
-        context.user_data["selected_provider"] = provider
 
     async def model_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
@@ -134,7 +158,9 @@ Atau ketik pertanyaan bebas! 🤖"""
 
         await self.agent.init_model(provider, model_name)
 
-        display = ANTHROPIC_MODELS.get(model_name) or OPENROUTER_MODELS.get(model_name, model_name)
+        display = (ANTHROPIC_MODELS.get(model_name)
+                   or OPENROUTER_MODELS.get(model_name)
+                   or f"🖥️ {model_name} (Lokal)")
         await query.edit_message_text(f"✅ Model diatur ke: {display}")
 
     async def _send_long(self, update: Update, text: str):
