@@ -2,6 +2,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 from src.auth import check_user_allowed
 from src.agent import ATGAgent, ANTHROPIC_MODELS, OPENROUTER_MODELS, fetch_anthropic_models, fetch_lmstudio_models
+from src.agent.model_router import OPENROUTER_IMAGE_MODELS, generate_image_openrouter
 from src.database import set_user_model, get_user_model, get_user_usage, get_usage_by_model
 from src.config import settings
 from src.modules.rnd import RndHandler
@@ -605,6 +606,68 @@ Atau ketik pertanyaan bebas! 🤖"""
         reply_markup = InlineKeyboardMarkup(keyboard)
         await update.message.reply_text("Modul Automation:", reply_markup=reply_markup)
 
+    async def gambar(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user_id = update.effective_user.id
+        if not await check_user_allowed(user_id):
+            return
+
+        prompt = " ".join(context.args).strip() if context.args else ""
+
+        if not prompt:
+            keyboard = [
+                [InlineKeyboardButton(label, callback_data=f"img_{mid}")]
+                for mid, label in OPENROUTER_IMAGE_MODELS.items()
+            ]
+            await update.message.reply_text(
+                "🎨 *Generator Gambar AI*\n\n"
+                "Pilih model lalu kirim deskripsi gambar:\n\n"
+                "✅ *Contoh prompt:*\n"
+                "• `logo perusahaan teknologi modern biru minimalis`\n"
+                "• `poster seminar AI profesional 2025`\n"
+                "• `konten instagram produk skincare elegan aesthetic`\n"
+                "• `infografis langkah-langkah investasi saham`\n\n"
+                "Atau langsung: `/gambar <deskripsi>`",
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode="Markdown",
+            )
+            return
+
+        # Ambil model pilihan dari user_data, default FLUX Pro
+        img_model = context.user_data.get("img_model", "black-forest-labs/flux-1.1-pro")
+        model_label = OPENROUTER_IMAGE_MODELS.get(img_model, img_model)
+
+        msg = await update.message.reply_text(
+            f"🎨 *Membuat gambar...*\n\n"
+            f"📝 Prompt: `{prompt}`\n"
+            f"🖼 Model: {model_label}\n\n"
+            f"⏱ Estimasi: 15–30 detik",
+            parse_mode="Markdown",
+        )
+        try:
+            image_url = await generate_image_openrouter(prompt, model=img_model)
+            await msg.delete()
+            await update.message.reply_photo(
+                photo=image_url,
+                caption=f"🎨 *Gambar selesai!*\n📝 _{prompt}_",
+                parse_mode="Markdown",
+            )
+        except Exception as e:
+            logger.error("Image generation error: %s", e)
+            await msg.edit_text(f"❌ Gagal membuat gambar:\n{e}")
+
+    async def img_model_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        query = update.callback_query
+        await query.answer()
+        img_model = query.data.split("img_", 1)[1]
+        context.user_data["img_model"] = img_model
+        model_label = OPENROUTER_IMAGE_MODELS.get(img_model, img_model)
+        await query.edit_message_text(
+            f"✅ Model gambar dipilih: *{model_label}*\n\n"
+            f"Sekarang kirim deskripsi gambar:\n"
+            f"`/gambar <deskripsi>`",
+            parse_mode="Markdown",
+        )
+
     async def module_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
         await query.answer()
@@ -715,10 +778,13 @@ Atau ketik pertanyaan bebas! 🤖"""
         app.add_handler(CommandHandler("resources", self.resources))
         app.add_handler(CommandHandler("rag", self.resources))
         app.add_handler(CommandHandler("auto", self.automation))
+        app.add_handler(CommandHandler("gambar", self.gambar))
+        app.add_handler(CommandHandler("image", self.gambar))
 
         app.add_handler(CallbackQueryHandler(self.provider_callback, pattern="^provider_"))
         app.add_handler(CallbackQueryHandler(self.setmodel_callback, pattern="^setmodel_"))
         app.add_handler(CallbackQueryHandler(self.model_callback, pattern="^model_"))
+        app.add_handler(CallbackQueryHandler(self.img_model_callback, pattern="^img_"))
         app.add_handler(CallbackQueryHandler(self.module_callback, pattern="^(sek_|rnd_|sosmed_|res_|auto_)"))
 
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.text_message))

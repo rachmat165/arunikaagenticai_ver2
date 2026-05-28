@@ -1,6 +1,6 @@
 import httpx
 from typing import Optional, Tuple
-from src.config import settings, Settings
+from src.config import settings
 
 ANTHROPIC_MODELS = {
     "claude-haiku-4-5-20251001": "Haiku 4.5 (Cepat & Murah)",
@@ -9,13 +9,27 @@ ANTHROPIC_MODELS = {
 }
 
 OPENROUTER_MODELS = {
-    "openai/gpt-4o": "GPT-4o (OpenAI)",
-    "google/gemini-2.0-flash-001": "Gemini 2.0 Flash",
-    "google/gemini-2.5-pro-preview": "Gemini 2.5 Pro 🧠",
-    "meta-llama/llama-3.3-70b-instruct": "Llama 3.3 70B",
-    "mistralai/mistral-large": "Mistral Large",
-    "deepseek/deepseek-chat": "Deepseek Chat",
-    "deepseek/deepseek-r1": "Deepseek R1 🧠",
+    # ── Reasoning ──────────────────────────────────────────────────────────
+    "deepseek/deepseek-r1":              "🧠 Deepseek R1 (Reasoning)",
+    "google/gemini-2.5-pro-preview":     "🧠 Gemini 2.5 Pro (Reasoning)",
+    # ── Dokumen & Surat ────────────────────────────────────────────────────
+    "anthropic/claude-3.5-sonnet":       "✍️ Claude 3.5 Sonnet (Surat/Dok)",
+    "openai/gpt-4o":                     "✍️ GPT-4o (Dokumen & Analisis)",
+    "qwen/qwen-2.5-72b-instruct":        "✍️ Qwen 2.5 72B (Multibahasa)",
+    # ── Presentasi & Konten ────────────────────────────────────────────────
+    "openai/gpt-4o-mini":                "📋 GPT-4o Mini (Presentasi Cepat)",
+    "google/gemini-2.0-flash-001":       "📋 Gemini 2.0 Flash (Konten Sosmed)",
+    # ── Umum & Hemat ──────────────────────────────────────────────────────
+    "meta-llama/llama-3.3-70b-instruct": "💬 Llama 3.3 70B (Umum)",
+    "mistralai/mistral-large":           "💬 Mistral Large (Umum)",
+    "deepseek/deepseek-chat":            "💬 Deepseek Chat (Hemat)",
+}
+
+# Model khusus untuk generate gambar (endpoint /v1/images/generations)
+OPENROUTER_IMAGE_MODELS = {
+    "black-forest-labs/flux-1.1-pro":    "🖼 FLUX 1.1 Pro (Kualitas Terbaik)",
+    "black-forest-labs/flux-schnell":    "⚡ FLUX Schnell (Cepat & Murah)",
+    "openai/dall-e-3":                   "🎨 DALL-E 3 (Gaya Kreatif)",
 }
 
 # LM Studio models are dynamic — fetched from local server at runtime
@@ -35,6 +49,13 @@ MODEL_PRICING = {
     "deepseek/deepseek-chat":             (0.27, 1.10),
     "deepseek/deepseek-r1":              (0.55, 2.19),
     "google/gemini-2.5-pro-preview":     (1.25, 10.00),
+    "anthropic/claude-3.5-sonnet":       (3.00, 15.00),
+    "openai/gpt-4o-mini":                (0.15, 0.60),
+    "qwen/qwen-2.5-72b-instruct":        (0.56, 0.77),
+    # Image models — billed per image, not per token
+    "black-forest-labs/flux-1.1-pro":   (0.04, 0.0),
+    "black-forest-labs/flux-schnell":   (0.004, 0.0),
+    "openai/dall-e-3":                  (0.04, 0.0),
 }
 
 
@@ -82,6 +103,35 @@ async def fetch_anthropic_models(api_key: str, base_url: str = "https://api.anth
         return models
 
 
+async def generate_image_openrouter(
+    prompt: str,
+    model: str = "black-forest-labs/flux-1.1-pro",
+    size: str = "1024x1024",
+) -> str:
+    """Generate image via OpenRouter. Returns image URL."""
+    if not settings.openrouter_api_key:
+        raise ValueError("OPENROUTER_API_KEY tidak dikonfigurasi di .env")
+
+    async with httpx.AsyncClient(
+        base_url=settings.openrouter_base_url,
+        headers={
+            "Authorization": f"Bearer {settings.openrouter_api_key}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://arunika2045.com",
+            "X-Title": "Reflective Koala ATG",
+        },
+        timeout=120.0,
+    ) as client:
+        response = await client.post(
+            "/images/generations",
+            json={"model": model, "prompt": prompt, "n": 1, "size": size},
+        )
+        if response.status_code != 200:
+            raise RuntimeError(f"OpenRouter image error {response.status_code}: {response.text}")
+        data = response.json()
+        return data["data"][0]["url"]
+
+
 def calc_cost(model_name: str, input_tokens: int, output_tokens: int) -> float:
     pricing = MODEL_PRICING.get(model_name, (3.00, 15.00))
     return (input_tokens * pricing[0] + output_tokens * pricing[1]) / 1_000_000
@@ -105,22 +155,13 @@ class ModelRouter:
                 timeout=120.0
             )
         elif self.provider == "openrouter":
-            cfg = settings
-            if not cfg.openrouter_api_key:
-                # Bot process bisa saja sudah berjalan sebelum .env diubah.
-                # Re-load Settings supaya key terbaru kebaca tanpa restart.
-                try:
-                    cfg = Settings()
-                except Exception:
-                    cfg = settings
-
-            if not cfg.openrouter_api_key:
+            if not settings.openrouter_api_key:
                 raise ValueError("OPENROUTER_API_KEY tidak dikonfigurasi. Atur di file .env")
 
             self.client = httpx.AsyncClient(
-                base_url=cfg.openrouter_base_url,
+                base_url=settings.openrouter_base_url,
                 headers={
-                    "Authorization": f"Bearer {cfg.openrouter_api_key}",
+                    "Authorization": f"Bearer {settings.openrouter_api_key}",
                     "Content-Type": "application/json",
                     "HTTP-Referer": "https://arunika2045.com",
                     "X-Title": "Reflective Koala ATG",
