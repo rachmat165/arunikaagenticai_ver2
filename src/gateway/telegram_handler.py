@@ -7,6 +7,7 @@ from src.database import set_user_model, get_user_model, get_user_usage, get_usa
 from src.config import settings
 from src.modules.rnd import RndHandler
 from src.tools.email_sender import send_email, test_smtp_connection
+from src.tools.surat_generator import SuratGenerator
 import aiosqlite
 import logging
 
@@ -17,6 +18,7 @@ class TelegramGateway:
         self.db_path = db_path
         self.agent = ATGAgent()
         self.rnd_module = RndHandler()
+        self.surat_gen = SuratGenerator(settings.output_dir)
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id if update.effective_user else None
@@ -297,6 +299,12 @@ Atau ketik pertanyaan bebas! 🤖"""
 
             context.user_data.pop("rnd_state", None)
             context.user_data.pop("rnd_partner", None)
+            return
+
+        # ── Surat state machine ────────────────────────────────────────────
+        surat_state = (context.user_data or {}).get("surat_state")
+        if surat_state:
+            await self._handle_surat_state(update, context, surat_state, user_message)
             return
 
         # ── Email state machine ────────────────────────────────────────────
@@ -676,6 +684,284 @@ Atau ketik pertanyaan bebas! 🤖"""
         )
 
     # ──────────────────────────────────────────────────────────────────────
+    # SURAT
+    # ──────────────────────────────────────────────────────────────────────
+
+    async def _handle_surat_state(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+        surat_state: str,
+        user_message: str,
+    ):
+        msg = update.message
+        if not msg or not context.user_data:
+            return
+        ud = context.user_data
+        draft: dict = ud.setdefault("surat_draft", {})
+
+        if surat_state == "surat_brief":
+            # AI draft: generate full surat from brief
+            ud["surat_state"] = None
+            user_id = update.effective_user.id if update.effective_user else 0
+            await msg.chat.send_action("typing")
+            status = await msg.reply_text(
+                "🤖 AI sedang menyusun surat...\n⏱ Estimasi 15-20 detik"
+            )
+            router = await self._ensure_model_router(user_id)
+
+            ai_prompt = (
+                "Kamu adalah Corporate Secretary PT. Arunika Teknologi Global. "
+                "Buat surat resmi profesional dengan gaya Islami berdasarkan brief berikut.\n\n"
+                f"Brief: {user_message}\n\n"
+                "Balas HANYA dalam format ini (tanpa tambahan apapun):\n"
+                "TUJUAN_NAMA: <nama lengkap penerima>\n"
+                "TUJUAN_JABATAN: <jabatan penerima>\n"
+                "TUJUAN_INSTITUSI: <nama institusi/perusahaan>\n"
+                "TUJUAN_KOTA: <kota, default: Tempat>\n"
+                "PERIHAL: <perihal surat singkat>\n"
+                "LAMPIRAN: <- atau jumlah lampiran>\n"
+                "PENANDATANGAN_NAMA: <nama penandatangan, default: Ir. Rachmat Ari Kusumanto>\n"
+                "PENANDATANGAN_JABATAN: <jabatan penandatangan, default: Direktur>\n"
+                "ISI:\n"
+                "<isi surat profesional Islami, minimal 3 paragraf. "
+                "Jangan sertakan salam pembuka/penutup, bismillah, letterhead, atau tanda tangan — "
+                "itu sudah ada di template. Tulis hanya isi/body paragraf surat.>"
+            )
+            try:
+                response, _ = await router.call(
+                    messages=[{"role": "user", "content": ai_prompt}],
+                    temperature=0.4,
+                    max_tokens=2000,
+                )
+                fields: dict[str, str] = {}
+                isi_lines: list[str] = []
+                in_isi = False
+                for line in response.strip().splitlines():
+                    ul = line.upper()
+                    if ul.startswith("ISI:"):
+                        in_isi = True
+                        rest = line.split(":", 1)[1].strip()
+                        if rest:
+                            isi_lines.append(rest)
+                        continue
+                    if in_isi:
+                        isi_lines.append(line)
+                        continue
+                    for key in ["TUJUAN_NAMA", "TUJUAN_JABATAN", "TUJUAN_INSTITUSI",
+                                "TUJUAN_KOTA", "PERIHAL", "LAMPIRAN",
+                                "PENANDATANGAN_NAMA", "PENANDATANGAN_JABATAN"]:
+                        if ul.startswith(key + ":"):
+                            fields[key] = line.split(":", 1)[1].strip()
+
+                draft.update({
+                    "tujuan_nama":          fields.get("TUJUAN_NAMA", ""),
+                    "tujuan_jabatan":       fields.get("TUJUAN_JABATAN", ""),
+                    "tujuan_institusi":     fields.get("TUJUAN_INSTITUSI", ""),
+                    "tujuan_kota":          fields.get("TUJUAN_KOTA", "Tempat"),
+                    "perihal":              fields.get("PERIHAL", ""),
+                    "lampiran":             fields.get("LAMPIRAN", "-"),
+                    "penandatangan_nama":   fields.get("PENANDATANGAN_NAMA", "Ir. Rachmat Ari Kusumanto"),
+                    "penandatangan_jabatan":fields.get("PENANDATANGAN_JABATAN", "Direktur"),
+                    "isi":                  "\n\n".join(isi_lines).strip(),
+                })
+                await status.delete()
+                await self._show_surat_preview(update, context, draft)
+            except Exception as e:
+                logger.exception("Surat AI draft error: %s", e)
+                await status.edit_text(f"❌ Gagal menyusun surat: {e}")
+
+        elif surat_state == "surat_tujuan":
+            draft["tujuan_nama"] = user_message
+            ud["surat_state"] = "surat_jabatan"
+            await msg.reply_text(
+                f"✅ Kepada: *{user_message}*\n\n"
+                "Masukkan *jabatan* penerima:\n_Contoh: Direktur Utama, Kepala Dinas_",
+                parse_mode="Markdown",
+            )
+
+        elif surat_state == "surat_jabatan":
+            draft["tujuan_jabatan"] = user_message
+            ud["surat_state"] = "surat_institusi"
+            await msg.reply_text(
+                f"✅ Jabatan: *{user_message}*\n\n"
+                "Masukkan *nama institusi/perusahaan* penerima:",
+                parse_mode="Markdown",
+            )
+
+        elif surat_state == "surat_institusi":
+            draft["tujuan_institusi"] = user_message
+            ud["surat_state"] = "surat_perihal"
+            await msg.reply_text(
+                f"✅ Institusi: *{user_message}*\n\n"
+                "Masukkan *perihal* surat:\n_Contoh: Penawaran Kerjasama Pengembangan AI_",
+                parse_mode="Markdown",
+            )
+
+        elif surat_state == "surat_perihal":
+            draft["tujuan_perihal"] = user_message
+            draft["perihal"] = user_message
+            ud["surat_state"] = "surat_isi"
+            await msg.reply_text(
+                f"✅ Perihal: *{user_message}*\n\n"
+                "📝 Tulis *isi surat* (beberapa paragraf).\n"
+                "_Jangan perlu salam pembuka/penutup — sudah ada di template._",
+                parse_mode="Markdown",
+            )
+
+        elif surat_state == "surat_isi":
+            draft["isi"] = user_message
+            ud["surat_state"] = None
+            if not draft.get("penandatangan_nama"):
+                draft["penandatangan_nama"] = "Ir. Rachmat Ari Kusumanto"
+                draft["penandatangan_jabatan"] = "Direktur"
+            await self._show_surat_preview(update, context, draft)
+
+        elif surat_state == "surat_email_to":
+            # Setelah PDF sudah dibuat, user memasukkan email tujuan
+            ud["surat_state"] = None
+            pdf_path = draft.get("pdf_path", "")
+            if not pdf_path:
+                await msg.reply_text("❌ PDF belum dibuat. Mulai ulang /sek")
+                return
+            status = await msg.reply_text("📤 Mengirim surat via email...")
+            result = await send_email(
+                to=user_message,
+                subject=f"[Surat ATG] {draft.get('perihal', '')}",
+                body=(
+                    f"Assalamu'alaikum Warahmatullahi Wabarakatuh,\n\n"
+                    f"Terlampir surat resmi dari PT. Arunika Teknologi Global.\n\n"
+                    f"Perihal: {draft.get('perihal', '')}\n\n"
+                    f"Wassalamu'alaikum Warahmatullahi Wabarakatuh.\n\n"
+                    f"Hormat kami,\nPT. Arunika Teknologi Global\n"
+                    f"{draft.get('penandatangan_nama', '')}\n"
+                    f"{draft.get('penandatangan_jabatan', '')}"
+                ),
+                attachment_path=pdf_path,
+            )
+            if "error" in result:
+                await status.edit_text(f"❌ Gagal kirim email:\n`{result['error']}`",
+                                       parse_mode="Markdown")
+            else:
+                await status.edit_text(
+                    f"✅ *Surat berhasil dikirim!*\n\n"
+                    f"📧 Kepada: `{user_message}`\n"
+                    f"📌 Perihal: `{draft.get('perihal', '')}`",
+                    parse_mode="Markdown",
+                )
+
+    async def _show_surat_preview(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+        draft: dict,
+    ):
+        if not update.message or not context.user_data:
+            return
+        ud = context.user_data
+        isi_preview = (draft.get("isi", "") or "")[:400]
+        if len(draft.get("isi", "")) > 400:
+            isi_preview += "..."
+
+        text = (
+            f"📄 *Preview Surat*\n\n"
+            f"📥 Kepada: *{draft.get('tujuan_jabatan', '')}* "
+            f"— {draft.get('tujuan_institusi', '')}\n"
+            f"📌 Perihal: *{draft.get('perihal', '')}*\n"
+            f"✍️ Ttd: {draft.get('penandatangan_nama', '')} "
+            f"({draft.get('penandatangan_jabatan', '')})\n\n"
+            f"📝 *Cuplikan Isi:*\n_{isi_preview}_\n\n"
+            f"Pilih tindakan:"
+        )
+        keyboard = [
+            [InlineKeyboardButton("📄 Download PDF", callback_data="surat_download")],
+            [InlineKeyboardButton("📧 Kirim via Email", callback_data="surat_email")],
+            [InlineKeyboardButton("❌ Batal", callback_data="surat_batal")],
+        ]
+        await update.message.reply_text(
+            text,
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="Markdown",
+        )
+
+    async def surat_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        query = update.callback_query
+        if not query or not query.data or not context.user_data:
+            return
+        await query.answer()
+        data = query.data
+        ud = context.user_data
+        draft: dict = ud.get("surat_draft", {})
+
+        if data == "surat_download":
+            if not draft.get("perihal") or not draft.get("isi"):
+                await query.edit_message_text("❌ Draft surat tidak lengkap. Mulai ulang /sek")
+                return
+            await query.edit_message_text("⏳ Membuat PDF surat...")
+            try:
+                pdf_path = await self._generate_surat_pdf(draft)
+                draft["pdf_path"] = pdf_path
+                await query.delete_message()
+                with open(pdf_path, "rb") as f:
+                    perihal_safe = draft.get("perihal", "surat")[:40]
+                    if query.message and query.message.chat:
+                        await query.message.chat.send_document(
+                            document=f,
+                            filename=f"Surat ATG - {perihal_safe}.pdf",
+                            caption=(
+                                f"📄 *Surat Resmi ATG*\n"
+                                f"📌 Perihal: _{draft.get('perihal', '')}_\n\n"
+                                f"Gunakan /sek jika ingin kirim via email.",
+                            ),
+                            parse_mode="Markdown",
+                        )
+            except Exception as e:
+                logger.exception("Surat PDF error: %s", e)
+                await query.edit_message_text(f"❌ Gagal membuat PDF:\n{e}")
+
+        elif data == "surat_email":
+            if not draft.get("perihal") or not draft.get("isi"):
+                await query.edit_message_text("❌ Draft tidak lengkap.")
+                return
+            # Generate PDF dulu jika belum ada
+            if not draft.get("pdf_path"):
+                await query.edit_message_text("⏳ Membuat PDF...")
+                try:
+                    pdf_path = await self._generate_surat_pdf(draft)
+                    draft["pdf_path"] = pdf_path
+                except Exception as e:
+                    await query.edit_message_text(f"❌ Gagal membuat PDF:\n{e}")
+                    return
+            ud["surat_state"] = "surat_email_to"
+            await query.edit_message_text(
+                "📧 *Kirim Surat via Email*\n\n"
+                "Masukkan *alamat email* penerima:",
+                parse_mode="Markdown",
+            )
+
+        elif data == "surat_batal":
+            ud.pop("surat_draft", None)
+            ud.pop("surat_state", None)
+            await query.edit_message_text("❌ Pembuatan surat dibatalkan.")
+
+    async def _generate_surat_pdf(self, draft: dict) -> str:
+        """Run blocking PDF generation in thread executor."""
+        import asyncio
+        def _build():
+            return self.surat_gen.generate_pdf(
+                perihal=draft.get("perihal", ""),
+                isi=draft.get("isi", ""),
+                tujuan_nama=draft.get("tujuan_nama", ""),
+                tujuan_jabatan=draft.get("tujuan_jabatan", ""),
+                tujuan_institusi=draft.get("tujuan_institusi", ""),
+                tujuan_kota=draft.get("tujuan_kota", "Tempat"),
+                lampiran=draft.get("lampiran", "-"),
+                penandatangan_nama=draft.get("penandatangan_nama", ""),
+                penandatangan_jabatan=draft.get("penandatangan_jabatan", ""),
+            )
+        return await asyncio.to_thread(_build)
+
+    # ──────────────────────────────────────────────────────────────────────
     # EMAIL
     # ──────────────────────────────────────────────────────────────────────
 
@@ -953,7 +1239,49 @@ Atau ketik pertanyaan bebas! 🤖"""
                 parse_mode="Markdown"
             )
 
-        # ── Other modules (placeholder) ───────────────────────────────────
+        # ── Sekretaris callbacks ──────────────────────────────────────────
+        elif callback_data == "sek_surat":
+            if not context.user_data:
+                return
+            keyboard = [
+                [InlineKeyboardButton("🤖 AI Draft Otomatis", callback_data="surat_mode_ai")],
+                [InlineKeyboardButton("✍️ Tulis Manual", callback_data="surat_mode_manual")],
+            ]
+            await query.edit_message_text(
+                "📄 *Buat Surat Resmi ATG*\n\n"
+                "Surat akan dicetak dengan letterhead & logo PT. Arunika Teknologi Global.\n\n"
+                "Pilih cara penulisan:",
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode="Markdown",
+            )
+
+        elif callback_data == "surat_mode_ai":
+            if not context.user_data:
+                return
+            context.user_data["surat_state"] = "surat_brief"
+            context.user_data["surat_draft"] = {}
+            await query.edit_message_text(
+                "🤖 *AI Draft Surat*\n\n"
+                "Jelaskan surat yang ingin dibuat:\n\n"
+                "✅ *Contoh:*\n"
+                "• _Surat penawaran kerjasama dengan RS Hasan Sadikin mengenai sistem AI_\n"
+                "• _Surat undangan seminar AI untuk instansi pemerintah di Bandung_\n"
+                "• _Surat permohonan dukungan kepada Dinas Kominfo Jawa Barat_",
+                parse_mode="Markdown",
+            )
+
+        elif callback_data == "surat_mode_manual":
+            if not context.user_data:
+                return
+            context.user_data["surat_state"] = "surat_tujuan"
+            context.user_data["surat_draft"] = {}
+            await query.edit_message_text(
+                "✍️ *Buat Surat Manual*\n\n"
+                "Masukkan *nama lengkap* penerima surat:\n"
+                "_Contoh: Dr. Ahmad Budi Santoso_",
+                parse_mode="Markdown",
+            )
+
         elif callback_data.startswith("sek_"):
             feature = callback_data.split("_")[1]
             await query.edit_message_text(f"⏳ Fitur sekretaris: {feature} akan segera diimplementasikan!")
@@ -1021,7 +1349,8 @@ Atau ketik pertanyaan bebas! 🤖"""
         app.add_handler(CallbackQueryHandler(self.model_callback, pattern="^model_"))
         app.add_handler(CallbackQueryHandler(self.img_model_callback, pattern="^img_"))
         app.add_handler(CallbackQueryHandler(self.email_callback, pattern="^email_"))
-        app.add_handler(CallbackQueryHandler(self.module_callback, pattern="^(sek_|rnd_|sosmed_|res_|auto_)"))
+        app.add_handler(CallbackQueryHandler(self.surat_callback, pattern="^surat_"))
+        app.add_handler(CallbackQueryHandler(self.module_callback, pattern="^(sek_|rnd_|sosmed_|res_|auto_|surat_mode_)"))
 
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.text_message))
         # Jika ada command yang tidak ter-match handler spesifik, akan ketahuan lewat log di debug_command.
