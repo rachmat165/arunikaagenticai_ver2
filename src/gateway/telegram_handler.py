@@ -695,7 +695,7 @@ Atau ketik pertanyaan bebas! 🤖"""
         user_message: str,
     ):
         msg = update.message
-        if not msg or not context.user_data:
+        if not msg or context.user_data is None:
             return
         ud = context.user_data
         draft: dict = ud.setdefault("surat_draft", {})
@@ -856,7 +856,7 @@ Atau ketik pertanyaan bebas! 🤖"""
         context: ContextTypes.DEFAULT_TYPE,
         draft: dict,
     ):
-        if not update.message or not context.user_data:
+        if not update.message or context.user_data is None:
             return
         ud = context.user_data
         isi_preview = (draft.get("isi", "") or "")[:400]
@@ -886,7 +886,7 @@ Atau ketik pertanyaan bebas! 🤖"""
 
     async def surat_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
-        if not query or not query.data or not context.user_data:
+        if not query or not query.data or context.user_data is None:
             return
         await query.answer()
         data = query.data
@@ -1241,8 +1241,6 @@ Atau ketik pertanyaan bebas! 🤖"""
 
         # ── Sekretaris callbacks ──────────────────────────────────────────
         elif callback_data == "sek_surat":
-            if not context.user_data:
-                return
             keyboard = [
                 [InlineKeyboardButton("🤖 AI Draft Otomatis", callback_data="surat_mode_ai")],
                 [InlineKeyboardButton("✍️ Tulis Manual", callback_data="surat_mode_manual")],
@@ -1256,10 +1254,9 @@ Atau ketik pertanyaan bebas! 🤖"""
             )
 
         elif callback_data == "surat_mode_ai":
-            if not context.user_data:
-                return
-            context.user_data["surat_state"] = "surat_brief"
-            context.user_data["surat_draft"] = {}
+            if context.user_data is not None:
+                context.user_data["surat_state"] = "surat_brief"
+                context.user_data["surat_draft"] = {}
             await query.edit_message_text(
                 "🤖 *AI Draft Surat*\n\n"
                 "Jelaskan surat yang ingin dibuat:\n\n"
@@ -1271,10 +1268,9 @@ Atau ketik pertanyaan bebas! 🤖"""
             )
 
         elif callback_data == "surat_mode_manual":
-            if not context.user_data:
-                return
-            context.user_data["surat_state"] = "surat_tujuan"
-            context.user_data["surat_draft"] = {}
+            if context.user_data is not None:
+                context.user_data["surat_state"] = "surat_tujuan"
+                context.user_data["surat_draft"] = {}
             await query.edit_message_text(
                 "✍️ *Buat Surat Manual*\n\n"
                 "Masukkan *nama lengkap* penerima surat:\n"
@@ -1349,7 +1345,9 @@ Atau ketik pertanyaan bebas! 🤖"""
         app.add_handler(CallbackQueryHandler(self.model_callback, pattern="^model_"))
         app.add_handler(CallbackQueryHandler(self.img_model_callback, pattern="^img_"))
         app.add_handler(CallbackQueryHandler(self.email_callback, pattern="^email_"))
-        app.add_handler(CallbackQueryHandler(self.surat_callback, pattern="^surat_"))
+        # surat_callback hanya untuk aksi akhir (download/email/batal)
+        app.add_handler(CallbackQueryHandler(self.surat_callback, pattern="^surat_(download|email|batal)$"))
+        # module_callback: sek_, rnd_, surat_mode_ (mode pilihan surat), dll
         app.add_handler(CallbackQueryHandler(self.module_callback, pattern="^(sek_|rnd_|sosmed_|res_|auto_|surat_mode_)"))
 
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.text_message))
