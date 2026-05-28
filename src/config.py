@@ -31,6 +31,14 @@ class Settings(BaseSettings):
     firecrawl_api_key: str = ""
     openai_api_key: str = ""
 
+    # Email (SMTP/IMAP)
+    email_host: str = "smtp.hostinger.com"
+    email_port: int = 465
+    email_user: str = ""
+    email_password: str = ""
+    email_imap_host: str = "imap.hostinger.com"
+    email_imap_port: int = 993
+
     debug: bool = False
     log_level: str = "INFO"
 

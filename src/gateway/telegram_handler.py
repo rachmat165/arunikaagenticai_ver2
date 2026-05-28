@@ -6,6 +6,7 @@ from src.agent.model_router import OPENROUTER_IMAGE_MODELS, generate_image_openr
 from src.database import set_user_model, get_user_model, get_user_usage, get_usage_by_model
 from src.config import settings
 from src.modules.rnd import RndHandler
+from src.tools.email_sender import send_email, test_smtp_connection
 import aiosqlite
 import logging
 
@@ -296,6 +297,12 @@ Atau ketik pertanyaan bebas! 🤖"""
 
             context.user_data.pop("rnd_state", None)
             context.user_data.pop("rnd_partner", None)
+            return
+
+        # ── Email state machine ────────────────────────────────────────────
+        email_state = (context.user_data or {}).get("email_state")
+        if email_state:
+            await self._handle_email_state(update, context, email_state, user_message)
             return
 
         # ── Normal chat ────────────────────────────────────────────────────
@@ -668,6 +675,232 @@ Atau ketik pertanyaan bebas! 🤖"""
             parse_mode="Markdown",
         )
 
+    # ──────────────────────────────────────────────────────────────────────
+    # EMAIL
+    # ──────────────────────────────────────────────────────────────────────
+
+    async def email_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user_id = update.effective_user.id
+        if not await check_user_allowed(user_id):
+            return
+
+        if not settings.email_user or not settings.email_password:
+            await update.message.reply_text(
+                "❌ Konfigurasi email belum diatur di .env\n"
+                "Tambahkan EMAIL_USER dan EMAIL_PASSWORD"
+            )
+            return
+
+        keyboard = [
+            [InlineKeyboardButton("✍️ Tulis Manual", callback_data="email_manual")],
+            [InlineKeyboardButton("🤖 Bantu AI Draft", callback_data="email_ai")],
+            [InlineKeyboardButton("🔌 Test Koneksi SMTP", callback_data="email_test")],
+        ]
+        await update.message.reply_text(
+            f"📧 *Kirim Email*\n\n"
+            f"📤 Pengirim: `{settings.email_user}`\n"
+            f"🌐 SMTP: `{settings.email_host}:{settings.email_port}`\n\n"
+            "Pilih cara penulisan:",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="Markdown",
+        )
+
+    async def _handle_email_state(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+        email_state: str,
+        user_message: str,
+    ):
+        msg = update.message
+        if not msg or not context.user_data:
+            return
+        ud = context.user_data
+        draft: dict = ud.setdefault("email_draft", {})
+
+        if email_state == "email_to":
+            draft["to"] = user_message
+            ud["email_state"] = "email_subject"
+            await msg.reply_text(
+                f"✅ Penerima: `{user_message}`\n\n📌 Masukkan *subjek* email:",
+                parse_mode="Markdown",
+            )
+
+        elif email_state == "email_subject":
+            draft["subject"] = user_message
+            ud["email_state"] = "email_body"
+            await msg.reply_text(
+                f"✅ Subjek: `{user_message}`\n\n📝 Tulis *isi* surat/email, lalu kirim:",
+                parse_mode="Markdown",
+            )
+
+        elif email_state == "email_body":
+            draft["body"] = user_message
+            ud["email_state"] = None
+            await self._show_email_preview(update, context, draft)
+
+        elif email_state == "email_ai_brief":
+            ud["email_state"] = None
+            user_id = update.effective_user.id if update.effective_user else 0
+            await msg.chat.send_action("typing")
+            status = await msg.reply_text("🤖 AI sedang membuat draft surat...")
+            router = await self._ensure_model_router(user_id)
+
+            ai_prompt = (
+                "Buat draft email profesional dalam Bahasa Indonesia berdasarkan brief berikut.\n\n"
+                f"Brief: {user_message}\n\n"
+                f"Pengirim: {settings.email_user} (Corporate Secretary, PT. Arunika Teknologi Global)\n\n"
+                "Balas HANYA dalam format ini (tanpa tambahan apapun):\n"
+                "KEPADA: <alamat email atau nama penerima>\n"
+                "SUBJEK: <subjek email>\n"
+                "ISI:\n<isi email lengkap dan profesional>"
+            )
+            try:
+                response, _ = await router.call(
+                    messages=[{"role": "user", "content": ai_prompt}],
+                    temperature=0.4,
+                    max_tokens=2000,
+                )
+                to_val, subject_val = "", ""
+                in_body = False
+                body_lines: list[str] = []
+                for line in response.strip().splitlines():
+                    ul = line.upper()
+                    if ul.startswith("KEPADA:"):
+                        to_val = line.split(":", 1)[1].strip()
+                    elif ul.startswith("SUBJEK:"):
+                        subject_val = line.split(":", 1)[1].strip()
+                    elif ul.startswith("ISI:"):
+                        in_body = True
+                    elif in_body:
+                        body_lines.append(line)
+
+                draft["to"] = to_val
+                draft["subject"] = subject_val
+                draft["body"] = "\n".join(body_lines).strip()
+                await status.delete()
+                await self._show_email_preview(update, context, draft, ai_generated=True)
+            except Exception as e:
+                await status.edit_text(f"❌ Gagal membuat draft AI: {e}")
+
+    async def _show_email_preview(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+        draft: dict,
+        ai_generated: bool = False,
+    ):
+        if not update.message:
+            return
+        header = "🤖 *AI Draft Selesai — Preview Email*" if ai_generated else "📧 *Preview Email*"
+        body_preview = draft.get("body", "")
+        if len(body_preview) > 600:
+            body_preview = body_preview[:600] + "\n_...( terpotong )_"
+        text = (
+            f"{header}\n\n"
+            f"📤 Dari: `{settings.email_user}`\n"
+            f"📥 Kepada: `{draft.get('to', '-')}`\n"
+            f"📌 Subjek: `{draft.get('subject', '-')}`\n\n"
+            f"📝 *Isi:*\n{body_preview}\n\n"
+            "Kirim email ini?"
+        )
+        keyboard = [
+            [InlineKeyboardButton("✅ Kirim Sekarang", callback_data="email_send")],
+            [InlineKeyboardButton("✏️ Edit Penerima", callback_data="email_edit_to")],
+            [InlineKeyboardButton("❌ Batal", callback_data="email_cancel")],
+        ]
+        await update.message.reply_text(
+            text,
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="Markdown",
+        )
+
+    async def email_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        query = update.callback_query
+        if not query or not query.data or not context.user_data:
+            return
+        await query.answer()
+        data = query.data
+        ud = context.user_data
+        draft: dict = ud.setdefault("email_draft", {})
+
+        if data == "email_manual":
+            ud["email_state"] = "email_to"
+            ud["email_draft"] = {}
+            await query.edit_message_text(
+                "✍️ *Kirim Email Manual*\n\n"
+                "Masukkan *alamat email penerima*:\n"
+                "_Contoh: direktur@perusahaan.com_\n"
+                "_Beberapa penerima pisahkan dengan koma_",
+                parse_mode="Markdown",
+            )
+
+        elif data == "email_ai":
+            ud["email_state"] = "email_ai_brief"
+            ud["email_draft"] = {}
+            await query.edit_message_text(
+                "🤖 *AI Draft Surat*\n\n"
+                "Jelaskan surat yang ingin dikirim:\n\n"
+                "_Contoh: Surat penawaran kerjasama kepada PT Maju Mundur "
+                "mengenai implementasi sistem AI untuk divisi HR_",
+                parse_mode="Markdown",
+            )
+
+        elif data == "email_test":
+            await query.edit_message_text("🔌 Menguji koneksi SMTP...")
+            result = await test_smtp_connection()
+            if "error" in result:
+                await query.edit_message_text(
+                    f"❌ *Koneksi gagal!*\n\n`{result['error']}`",
+                    parse_mode="Markdown",
+                )
+            else:
+                await query.edit_message_text(
+                    f"✅ *Koneksi SMTP berhasil!*\n\n"
+                    f"🌐 Host: `{result['host']}`\n"
+                    f"👤 User: `{result['user']}`\n\n"
+                    "Siap mengirim email.",
+                    parse_mode="Markdown",
+                )
+
+        elif data == "email_send":
+            if not draft.get("to") or not draft.get("subject") or not draft.get("body"):
+                await query.edit_message_text("❌ Draft tidak lengkap. Mulai ulang dengan /email")
+                return
+            await query.edit_message_text("📤 Mengirim email...")
+            result = await send_email(
+                to=draft["to"],
+                subject=draft["subject"],
+                body=draft["body"],
+            )
+            if "error" in result:
+                await query.edit_message_text(
+                    f"❌ *Gagal mengirim email:*\n\n`{result['error']}`",
+                    parse_mode="Markdown",
+                )
+            else:
+                await query.edit_message_text(
+                    f"✅ *Email berhasil dikirim!*\n\n"
+                    f"📤 Dari: `{settings.email_user}`\n"
+                    f"📥 Kepada: `{draft['to']}`\n"
+                    f"📌 Subjek: `{draft['subject']}`",
+                    parse_mode="Markdown",
+                )
+            ud.pop("email_draft", None)
+            ud.pop("email_state", None)
+
+        elif data == "email_edit_to":
+            ud["email_state"] = "email_to"
+            await query.edit_message_text(
+                "✏️ *Edit Penerima*\n\nMasukkan alamat email penerima yang baru:",
+                parse_mode="Markdown",
+            )
+
+        elif data == "email_cancel":
+            ud.pop("email_draft", None)
+            ud.pop("email_state", None)
+            await query.edit_message_text("❌ Pengiriman email dibatalkan.")
+
     async def module_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
         await query.answer()
@@ -780,11 +1013,14 @@ Atau ketik pertanyaan bebas! 🤖"""
         app.add_handler(CommandHandler("auto", self.automation))
         app.add_handler(CommandHandler("gambar", self.gambar))
         app.add_handler(CommandHandler("image", self.gambar))
+        app.add_handler(CommandHandler("email", self.email_cmd))
+        app.add_handler(CommandHandler("kirim", self.email_cmd))
 
         app.add_handler(CallbackQueryHandler(self.provider_callback, pattern="^provider_"))
         app.add_handler(CallbackQueryHandler(self.setmodel_callback, pattern="^setmodel_"))
         app.add_handler(CallbackQueryHandler(self.model_callback, pattern="^model_"))
         app.add_handler(CallbackQueryHandler(self.img_model_callback, pattern="^img_"))
+        app.add_handler(CallbackQueryHandler(self.email_callback, pattern="^email_"))
         app.add_handler(CallbackQueryHandler(self.module_callback, pattern="^(sek_|rnd_|sosmed_|res_|auto_)"))
 
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.text_message))
