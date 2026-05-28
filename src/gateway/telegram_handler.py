@@ -9,8 +9,10 @@ from src.modules.rnd import RndHandler
 from src.tools.email_sender import send_email, test_smtp_connection
 from src.tools.surat_generator import SuratGenerator
 from src.tools.code_executor import execute_python, apply_improvement, restart_bot
+from src.tools.api_balance import check_openrouter_balance, check_anthropic_balance, IDR_RATE
 import aiosqlite
 import logging
+from datetime import datetime as _dt
 
 logger = logging.getLogger(__name__)
 
@@ -417,43 +419,159 @@ Atau ketik pertanyaan bebas! 🤖"""
         user_id = update.effective_user.id
         if not await check_user_allowed(user_id):
             return
+        if not update.message:
+            return
 
+        msg = await update.message.reply_text("⏳ Mengambil data kredit dari semua provider...")
+
+        # ── Data lokal (DB) ───────────────────────────────────────────────
         async with aiosqlite.connect(self.db_path) as db:
-            summary = await get_user_usage(db, user_id)
+            summary  = await get_user_usage(db, user_id)
             by_model = await get_usage_by_model(db, user_id)
             provider, model_name = await get_user_model(db, user_id)
 
+        # ── Cek saldo real dari API ───────────────────────────────────────
+        import asyncio as _aio
+        or_data, ant_data = await _aio.gather(
+            check_openrouter_balance(),
+            check_anthropic_balance(),
+        )
+
+        now_str = _dt.now().strftime("%d/%m/%Y %H:%M")
         total_tokens = summary["total_input"] + summary["total_output"]
-        cost_idr = summary["total_cost"] * 16000  # approximate USD→IDR
 
         lines = [
-            "💳 *Penggunaan API Anda*",
-            "",
-            f"🔢 Total request: *{summary['total_calls']}x*",
-            f"📥 Token input: *{summary['total_input']:,}*",
-            f"📤 Token output: *{summary['total_output']:,}*",
-            f"📊 Total token: *{total_tokens:,}*",
-            f"💰 Estimasi biaya: *${summary['total_cost']:.6f}* (~Rp {cost_idr:,.0f})",
+            "💳 *LAPORAN KREDIT API*",
+            f"_Diperbarui: {now_str}_",
             "",
         ]
+
+        # ── OpenRouter ────────────────────────────────────────────────────
+        lines.append("🌐 *OpenRouter*")
+        if "error" in or_data:
+            lines.append(f"  ❌ {or_data['error']}")
+        else:
+            usage_usd  = or_data.get("usage", 0) or 0
+            limit_usd  = or_data.get("limit")
+            remaining  = or_data.get("remaining")
+            is_free    = or_data.get("is_free_tier", False)
+            label      = or_data.get("label", "")
+
+            lines.append(f"  📛 Key: `{label or 'default'}`")
+            lines.append(f"  💸 Terpakai: *${usage_usd:.4f}* (~Rp {usage_usd*IDR_RATE:,.0f})")
+            if limit_usd is not None:
+                lines.append(f"  🏦 Limit: *${limit_usd:.2f}*")
+                if remaining is not None:
+                    pct = (remaining / limit_usd * 100) if limit_usd > 0 else 0
+                    bar = "█" * int(pct / 10) + "░" * (10 - int(pct / 10))
+                    lines.append(f"  ✅ Sisa: *${remaining:.4f}* [{bar}] {pct:.0f}%")
+            else:
+                lines.append("  ♾️ Limit: tidak terbatas / pay-as-you-go")
+            if is_free:
+                lines.append("  🆓 Tier: Free")
+        lines.append("")
+
+        # ── Anthropic ─────────────────────────────────────────────────────
+        lines.append("🤖 *Anthropic Claude*")
+        if "error" in ant_data:
+            lines.append(f"  ❌ {ant_data['error']}")
+        else:
+            status = ant_data.get("key_status", "?")
+            icon = "✅" if status == "aktif" else "❌"
+            lines.append(f"  {icon} API Key: *{status}*")
+            lines.append(f"  🔗 Saldo: [console.anthropic.com](https://console.anthropic.com/settings/billing)")
+        lines.append("")
+
+        # ── Penggunaan lokal (DB) ─────────────────────────────────────────
+        lines.append("📊 *Penggunaan Lokal Bot*")
+        lines.append(f"  🔢 Total request: *{summary['total_calls']}x*")
+        lines.append(f"  📥 Token input  : *{summary['total_input']:,}*")
+        lines.append(f"  📤 Token output : *{summary['total_output']:,}*")
+        lines.append(f"  📈 Total token  : *{total_tokens:,}*")
+        lines.append(f"  💰 Est. biaya   : *${summary['total_cost']:.6f}* (~Rp {summary['total_cost']*IDR_RATE:,.0f})")
+        lines.append("")
 
         if by_model:
             lines.append("📋 *Per Model:*")
             for row in by_model:
                 prov, mdl, inp, out, cost, calls = row
                 mdl_short = mdl.split("/")[-1] if "/" in mdl else mdl
-                lines.append(f"  • `{mdl_short}` — {calls}x, ${cost:.6f}")
+                lines.append(f"  • `{mdl_short}` ({prov}) — {calls}x · ${cost:.4f}")
             lines.append("")
 
+        model_short = model_name.split("/")[-1] if "/" in model_name else model_name
         lines += [
-            f"⚙️ Model aktif: *{model_name}*",
-            f"🔌 Provider: *{provider}*",
-            "",
-            "ℹ️ _Biaya di atas adalah estimasi berdasarkan token yang digunakan._",
-            "_Cek tagihan resmi di console.anthropic.com_",
+            f"⚙️ *Model aktif:* `{model_short}` via *{provider}*",
         ]
 
-        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+        text = "\n".join(lines)
+        await msg.edit_text(text, parse_mode="Markdown", disable_web_page_preview=True)
+
+        # ── Simpan ke memory ──────────────────────────────────────────────
+        self._save_credit_memory(or_data, ant_data, summary, provider, model_name, now_str)
+
+    def _save_credit_memory(self, or_data: dict, ant_data: dict,
+                            summary: dict, provider: str, model_name: str,
+                            now_str: str):
+        """Simpan snapshot kredit terakhir ke file memory."""
+        from pathlib import Path
+        mem_dir = Path(__file__).parent.parent.parent.parent / \
+                  ".claude" / "projects" / "e--ArunikaAgenticAi-Ver2" / "memory"
+        mem_dir.mkdir(parents=True, exist_ok=True)
+        mem_file = mem_dir / "credit_snapshot.md"
+
+        or_usage     = or_data.get("usage",     0) or 0
+        or_limit     = or_data.get("limit")
+        or_remaining = or_data.get("remaining")
+        ant_status   = ant_data.get("key_status", "?")
+        total_tokens = summary["total_input"] + summary["total_output"]
+
+        content = f"""---
+name: credit-snapshot
+description: Snapshot kredit API terakhir dicek oleh user via /credit
+metadata:
+  type: project
+---
+
+**Dicek pada:** {now_str}
+
+## OpenRouter
+- Terpakai : ${or_usage:.4f}
+- Limit     : {"$" + f"{or_limit:.2f}" if or_limit else "unlimited"}
+- Sisa      : {"$" + f"{or_remaining:.4f}" if or_remaining is not None else "N/A"}
+- Free tier : {or_data.get("is_free_tier", False)}
+
+## Anthropic
+- API Key   : {ant_status}
+- Saldo     : cek manual di console.anthropic.com/settings/billing
+
+## Penggunaan Bot (lokal DB)
+- Total request : {summary["total_calls"]}x
+- Total token   : {total_tokens:,}
+- Est. biaya    : ${summary["total_cost"]:.6f}
+
+## Model Aktif
+- Provider : {provider}
+- Model    : {model_name}
+
+**Why:** Disimpan otomatis setiap /credit agar konteks kredit tersedia di sesi berikutnya.
+**How to apply:** Gunakan sebagai referensi saat user bertanya sisa kredit atau budget AI.
+"""
+        mem_file.write_text(content, encoding="utf-8")
+
+        # Update MEMORY.md index
+        memory_index = mem_dir / "MEMORY.md"
+        entry = f"- [Credit Snapshot](credit_snapshot.md) — Saldo API terakhir dicek: {now_str}\n"
+        if memory_index.exists():
+            existing = memory_index.read_text(encoding="utf-8")
+            if "credit_snapshot.md" in existing:
+                import re
+                existing = re.sub(r"- \[Credit Snapshot\].*\n", entry, existing)
+                memory_index.write_text(existing, encoding="utf-8")
+            else:
+                memory_index.write_text(existing.rstrip() + "\n" + entry, encoding="utf-8")
+        else:
+            memory_index.write_text(entry, encoding="utf-8")
 
     async def fungsi(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
