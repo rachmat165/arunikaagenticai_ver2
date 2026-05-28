@@ -11,9 +11,11 @@ ANTHROPIC_MODELS = {
 OPENROUTER_MODELS = {
     "openai/gpt-4o": "GPT-4o (OpenAI)",
     "google/gemini-2.0-flash-001": "Gemini 2.0 Flash",
+    "google/gemini-2.5-pro-preview": "Gemini 2.5 Pro 🧠",
     "meta-llama/llama-3.3-70b-instruct": "Llama 3.3 70B",
     "mistralai/mistral-large": "Mistral Large",
     "deepseek/deepseek-chat": "Deepseek Chat",
+    "deepseek/deepseek-r1": "Deepseek R1 🧠",
 }
 
 # LM Studio models are dynamic — fetched from local server at runtime
@@ -31,6 +33,8 @@ MODEL_PRICING = {
     "meta-llama/llama-3.3-70b-instruct":  (0.39, 0.39),
     "mistralai/mistral-large":            (2.00, 6.00),
     "deepseek/deepseek-chat":             (0.27, 1.10),
+    "deepseek/deepseek-r1":              (0.55, 2.19),
+    "google/gemini-2.5-pro-preview":     (1.25, 10.00),
 }
 
 
