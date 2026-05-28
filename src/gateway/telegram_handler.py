@@ -10,6 +10,7 @@ from src.tools.email_sender import send_email, test_smtp_connection
 from src.tools.surat_generator import SuratGenerator
 from src.tools.code_executor import execute_python, apply_improvement, restart_bot
 from src.tools.api_balance import check_openrouter_balance, check_anthropic_balance, IDR_RATE
+from src.tools.file_reader import extract_text, is_image, is_supported
 import aiosqlite
 import logging
 from datetime import datetime as _dt
@@ -1738,6 +1739,140 @@ SELESAI"""
         # Log exception agar bisa dilacak kenapa pesan tidak memunculkan reply.
         logger.exception("Telegram handler error: update=%s exc=%s", update, context.error)
 
+    # ──────────────────────────────────────────────────────────────────────
+    # ATTACHMENT HANDLER (dokumen & foto)
+    # ──────────────────────────────────────────────────────────────────────
+
+    async def _process_attachment(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+        file_id: str,
+        file_name: str,
+        caption: str,
+        file_size: int,
+    ):
+        """Unduh file, ekstrak teks, kirim ke AI dengan caption sebagai instruksi."""
+        msg = update.message
+        if not msg:
+            return
+        user_id = update.effective_user.id if update.effective_user else 0
+
+        # Cek ukuran (max 20 MB)
+        if file_size and file_size > 20 * 1024 * 1024:
+            await msg.reply_text("❌ File terlalu besar (max 20 MB)")
+            return
+
+        status = await msg.reply_text(f"📎 Membaca *{file_name}*...", parse_mode="Markdown")
+
+        # Unduh ke folder temp
+        from pathlib import Path as _Path
+        tmp_dir = _Path(settings.output_dir) / "temp"
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        tmp_path = tmp_dir / file_name
+
+        try:
+            tg_file = await context.bot.get_file(file_id)
+            await tg_file.download_to_drive(str(tmp_path))
+        except Exception as e:
+            await status.edit_text(f"❌ Gagal mengunduh file: {e}")
+            return
+
+        # Ekstrak teks
+        result = await extract_text(str(tmp_path), file_name)
+
+        # Hapus file temp
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+        if "error" in result:
+            await status.edit_text(f"❌ {result['error']}", parse_mode="Markdown")
+            return
+
+        extracted = result["text"]
+        pages     = result.get("pages", 1)
+        ftype     = result.get("file_type", "file").upper()
+        chars     = len(extracted)
+
+        await status.edit_text(
+            f"✅ *{file_name}* berhasil dibaca\n"
+            f"📄 {ftype} · {pages} halaman · {chars:,} karakter\n\n"
+            f"⏳ AI sedang memproses...",
+            parse_mode="Markdown",
+        )
+
+        # Bangun prompt: gabungkan instruksi caption + isi file
+        user_instruction = caption.strip() if caption else "Analisis dan ringkas isi dokumen ini."
+        ai_prompt = (
+            f"{user_instruction}\n\n"
+            f"--- ISI DOKUMEN ({file_name}) ---\n"
+            f"{extracted}"
+        )
+
+        # Kirim ke AI dengan model user
+        await msg.chat.send_action("typing")
+        try:
+            router = await self._ensure_model_router(user_id)
+            response, _ = await router.call(
+                messages=[{"role": "user", "content": ai_prompt}],
+                temperature=0.5,
+                max_tokens=4096,
+            )
+            await status.delete()
+            await self._send_long(update, response)
+        except Exception as e:
+            logger.exception("Attachment AI error: %s", e)
+            await status.edit_text(f"❌ Gagal memproses dokumen: {e}")
+
+    async def document_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handler untuk file dokumen (PDF, DOCX, TXT, dll)."""
+        user_id = update.effective_user.id if update.effective_user else 0
+        if not await check_user_allowed(user_id):
+            return
+        msg = update.message
+        if not msg or not msg.document:
+            return
+
+        doc      = msg.document
+        caption  = msg.caption or ""
+        fname    = doc.file_name or "file"
+
+        if not is_supported(fname):
+            await msg.reply_text(
+                f"⚠️ Format *{fname.split('.')[-1].upper()}* belum didukung.\n"
+                "Format yang bisa dibaca: *PDF, DOCX, TXT, MD, CSV*",
+                parse_mode="Markdown",
+            )
+            return
+
+        await self._process_attachment(
+            update, context,
+            file_id=doc.file_id,
+            file_name=fname,
+            caption=caption,
+            file_size=doc.file_size or 0,
+        )
+
+    async def photo_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handler untuk foto — kirim ke AI sebagai deskripsi konteks."""
+        user_id = update.effective_user.id if update.effective_user else 0
+        if not await check_user_allowed(user_id):
+            return
+        msg = update.message
+        if not msg or not msg.photo:
+            return
+
+        caption = msg.caption or ""
+
+        await msg.reply_text(
+            "📸 Foto diterima.\n\n"
+            "⚠️ Untuk membaca teks dari foto (OCR), gunakan format dokumen (PDF/DOCX/TXT).\n"
+            f"Instruksi Anda: _{caption or 'tidak ada caption'}_",
+            parse_mode="Markdown",
+        )
+
     async def debug_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Fallback untuk mendeteksi command yang tidak ter-match ke handler spesifik.
         msg = update.message
@@ -1797,5 +1932,6 @@ SELESAI"""
         app.add_handler(CallbackQueryHandler(self.module_callback, pattern="^(sek_|rnd_|sosmed_|res_|auto_|surat_mode_)"))
 
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.text_message))
-        # Jika ada command yang tidak ter-match handler spesifik, akan ketahuan lewat log di debug_command.
+        app.add_handler(MessageHandler(filters.Document.ALL, self.document_handler))
+        app.add_handler(MessageHandler(filters.PHOTO, self.photo_handler))
         app.add_handler(MessageHandler(filters.COMMAND, self.debug_command))
