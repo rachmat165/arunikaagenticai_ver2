@@ -1091,7 +1091,6 @@ SCRIPT:
         draft: dict = ud.setdefault("surat_draft", {})
 
         if surat_state == "surat_brief":
-            # AI draft: generate full surat from brief
             ud["surat_state"] = None
             user_id = update.effective_user.id if update.effective_user else 0
             await msg.chat.send_action("typing")
@@ -1100,66 +1099,109 @@ SCRIPT:
             )
             router = await self._ensure_model_router(user_id)
 
-            ai_prompt = (
-                "Kamu adalah Corporate Secretary PT. Arunika Teknologi Global. "
-                "Buat surat resmi profesional dengan gaya Islami berdasarkan brief berikut.\n\n"
-                f"Brief: {user_message}\n\n"
-                "Balas HANYA dalam format ini (tanpa tambahan apapun):\n"
-                "TUJUAN_NAMA: <nama lengkap penerima>\n"
-                "TUJUAN_JABATAN: <jabatan penerima>\n"
-                "TUJUAN_INSTITUSI: <nama institusi/perusahaan>\n"
-                "TUJUAN_KOTA: <kota, default: Tempat>\n"
-                "PERIHAL: <perihal surat singkat>\n"
-                "LAMPIRAN: <- atau jumlah lampiran>\n"
-                "PENANDATANGAN_NAMA: <nama penandatangan, default: Ir. Rachmat Ari Kusumanto>\n"
-                "PENANDATANGAN_JABATAN: <jabatan penandatangan, default: Direktur>\n"
-                "ISI:\n"
-                "<isi surat profesional Islami, minimal 3 paragraf. "
-                "Jangan sertakan salam pembuka/penutup, bismillah, letterhead, atau tanda tangan — "
-                "itu sudah ada di template. Tulis hanya isi/body paragraf surat.>"
-            )
+            ai_prompt = f"""Kamu adalah Corporate Secretary PT. Arunika Teknologi Global (ATG).
+Buat surat resmi profesional dalam Bahasa Indonesia berdasarkan brief berikut.
+
+Brief dari pengguna: {user_message}
+
+INSTRUKSI PENTING - balas PERSIS dalam format berikut, tidak lebih tidak kurang:
+
+TUJUAN_NAMA: [nama lengkap penerima, ambil dari brief]
+TUJUAN_JABATAN: [jabatan penerima, contoh: Direktur Utama]
+TUJUAN_INSTITUSI: [nama perusahaan/institusi penerima]
+TUJUAN_KOTA: [kota penerima, default: Tempat]
+PERIHAL: [judul/perihal surat, singkat dan jelas]
+LAMPIRAN: [-]
+PENANDATANGAN_NAMA: [Ir. Rachmat Ari Kusumanto]
+PENANDATANGAN_JABATAN: [Direktur]
+ISI_SURAT:
+[Tulis isi surat dalam 3 paragraf profesional. Jangan tulis salam (Assalamualaikum dll), bismillah, atau tanda tangan — sudah ada di template. Langsung tulis paragraf isi saja.]
+SELESAI"""
+
             try:
                 response, _ = await router.call(
                     messages=[{"role": "user", "content": ai_prompt}],
-                    temperature=0.4,
+                    temperature=0.3,
                     max_tokens=2000,
                 )
-                fields: dict[str, str] = {}
-                isi_lines: list[str] = []
-                in_isi = False
-                for line in response.strip().splitlines():
-                    ul = line.upper()
-                    if ul.startswith("ISI:"):
-                        in_isi = True
-                        rest = line.split(":", 1)[1].strip()
-                        if rest:
-                            isi_lines.append(rest)
-                        continue
-                    if in_isi:
-                        isi_lines.append(line)
-                        continue
-                    for key in ["TUJUAN_NAMA", "TUJUAN_JABATAN", "TUJUAN_INSTITUSI",
-                                "TUJUAN_KOTA", "PERIHAL", "LAMPIRAN",
-                                "PENANDATANGAN_NAMA", "PENANDATANGAN_JABATAN"]:
-                        if ul.startswith(key + ":"):
-                            fields[key] = line.split(":", 1)[1].strip()
+
+                # ── Parsing robust: coba beberapa variasi key ─────────────
+                def _extract(text: str, *keys) -> str:
+                    for k in keys:
+                        for line in text.splitlines():
+                            stripped = line.strip()
+                            if stripped.upper().startswith(k.upper() + ":"):
+                                val = stripped[len(k)+1:].strip()
+                                if val:
+                                    return val
+                    return ""
+
+                # Isi surat: ambil antara ISI_SURAT: dan SELESAI (atau akhir teks)
+                def _extract_isi(text: str) -> str:
+                    markers_start = ["ISI_SURAT:", "ISI:"]
+                    markers_end   = ["SELESAI", "---"]
+                    body = ""
+                    for ms in markers_start:
+                        if ms in text.upper():
+                            idx = text.upper().index(ms)
+                            body = text[idx + len(ms):].strip()
+                            break
+                    if not body:
+                        # fallback: pakai semua teks setelah baris ke-10
+                        lines = text.strip().splitlines()
+                        body = "\n".join(lines[9:]).strip() if len(lines) > 9 else text
+                    # potong di marker akhir
+                    for me in markers_end:
+                        if me in body.upper():
+                            body = body[:body.upper().index(me)].strip()
+                    return body.strip()
+
+                perihal   = _extract(response, "PERIHAL")
+                tujuan_n  = _extract(response, "TUJUAN_NAMA", "KEPADA_NAMA", "NAMA")
+                tujuan_j  = _extract(response, "TUJUAN_JABATAN", "JABATAN")
+                tujuan_i  = _extract(response, "TUJUAN_INSTITUSI", "INSTITUSI", "PERUSAHAAN")
+                tujuan_k  = _extract(response, "TUJUAN_KOTA", "KOTA") or "Tempat"
+                ttd_nama  = _extract(response, "PENANDATANGAN_NAMA") or "Ir. Rachmat Ari Kusumanto"
+                ttd_jab   = _extract(response, "PENANDATANGAN_JABATAN") or "Direktur"
+                isi       = _extract_isi(response)
+
+                # ── Fallback jika perihal kosong ──────────────────────────
+                if not perihal:
+                    # coba ambil dari brief user
+                    words = user_message.split()[:8]
+                    perihal = " ".join(words).title()
+
+                # ── Validasi minimum ──────────────────────────────────────
+                if not isi or len(isi) < 50:
+                    await status.edit_text(
+                        "⚠️ AI tidak menghasilkan isi surat yang memadai.\n\n"
+                        "Coba deskripsikan lebih detail, contoh:\n"
+                        "_'Buat surat kerjasama kepada Direktur PT X mengenai implementasi AI di bidang Y'_\n\n"
+                        "Atau gunakan /sek → Tulis Manual",
+                        parse_mode="Markdown",
+                    )
+                    return
 
                 draft.update({
-                    "tujuan_nama":          fields.get("TUJUAN_NAMA", ""),
-                    "tujuan_jabatan":       fields.get("TUJUAN_JABATAN", ""),
-                    "tujuan_institusi":     fields.get("TUJUAN_INSTITUSI", ""),
-                    "tujuan_kota":          fields.get("TUJUAN_KOTA", "Tempat"),
-                    "perihal":              fields.get("PERIHAL", ""),
-                    "lampiran":             fields.get("LAMPIRAN", "-"),
-                    "penandatangan_nama":   fields.get("PENANDATANGAN_NAMA", "Ir. Rachmat Ari Kusumanto"),
-                    "penandatangan_jabatan":fields.get("PENANDATANGAN_JABATAN", "Direktur"),
-                    "isi":                  "\n\n".join(isi_lines).strip(),
+                    "tujuan_nama":           tujuan_n,
+                    "tujuan_jabatan":        tujuan_j,
+                    "tujuan_institusi":      tujuan_i,
+                    "tujuan_kota":           tujuan_k,
+                    "perihal":               perihal,
+                    "lampiran":              "-",
+                    "penandatangan_nama":    ttd_nama,
+                    "penandatangan_jabatan": ttd_jab,
+                    "isi":                   isi,
                 })
                 await status.delete()
                 await self._show_surat_preview(update, context, draft)
+
             except Exception as e:
                 logger.exception("Surat AI draft error: %s", e)
-                await status.edit_text(f"❌ Gagal menyusun surat: {e}")
+                await status.edit_text(
+                    f"❌ Gagal menyusun surat: {type(e).__name__}: {e}\n\n"
+                    "Coba lagi atau gunakan /sek → Tulis Manual"
+                )
 
         elif surat_state == "surat_tujuan":
             draft["tujuan_nama"] = user_message
@@ -1285,7 +1327,11 @@ SCRIPT:
 
         if data == "surat_download":
             if not draft.get("perihal") or not draft.get("isi"):
-                await query.edit_message_text("❌ Draft surat tidak lengkap. Mulai ulang /sek")
+                await query.edit_message_text(
+                    "⚠️ *Draft surat hilang* — kemungkinan bot baru direstart.\n\n"
+                    "Ketik /sek → Buat Surat untuk memulai ulang.",
+                    parse_mode="Markdown",
+                )
                 return
             await query.edit_message_text("⏳ Membuat PDF surat...")
             try:
@@ -1311,7 +1357,11 @@ SCRIPT:
 
         elif data == "surat_email":
             if not draft.get("perihal") or not draft.get("isi"):
-                await query.edit_message_text("❌ Draft tidak lengkap.")
+                await query.edit_message_text(
+                    "⚠️ *Draft surat hilang* — kemungkinan bot baru direstart.\n\n"
+                    "Ketik /sek → Buat Surat untuk memulai ulang.",
+                    parse_mode="Markdown",
+                )
                 return
             # Generate PDF dulu jika belum ada
             if not draft.get("pdf_path"):
