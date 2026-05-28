@@ -182,19 +182,41 @@ class ModelRouter:
             await self.client.aclose()
             self.client = None
 
+    @staticmethod
+    def _to_openai_content(content):
+        """Convert Anthropic vision content list to OpenAI/OpenRouter format."""
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts = []
+            for part in content:
+                if part.get("type") == "text":
+                    parts.append({"type": "text", "text": part["text"]})
+                elif part.get("type") == "image":
+                    src = part.get("source", {})
+                    if src.get("type") == "base64":
+                        url = f"data:{src.get('media_type', 'image/jpeg')};base64,{src.get('data', '')}"
+                        parts.append({"type": "image_url", "image_url": {"url": url}})
+            return parts
+        return content
+
     async def call(self, messages: list, system: str = None,
                    temperature: float = 0.7, max_tokens: int = 4096) -> Tuple[str, dict]:
         """Returns (response_text, usage_dict) where usage_dict has input_tokens, output_tokens, cost_usd."""
         if not self.client:
             await self.init_client()
 
-        # Sanitize messages
+        # Sanitize messages — preserve list content (vision) as-is
         clean_messages = []
         for msg in messages:
             if isinstance(msg, dict) and msg.get("role") and msg.get("content"):
-                content = str(msg["content"]).strip()
-                if content:
+                content = msg["content"]
+                if isinstance(content, list):
                     clean_messages.append({"role": msg["role"], "content": content})
+                else:
+                    content_str = str(content).strip()
+                    if content_str:
+                        clean_messages.append({"role": msg["role"], "content": content_str})
 
         # Anthropic requires first message from user
         while clean_messages and clean_messages[0]["role"] == "assistant":
@@ -242,7 +264,8 @@ class ModelRouter:
         all_messages = []
         if system:
             all_messages.append({"role": "system", "content": system})
-        all_messages.extend(messages)
+        for msg in messages:
+            all_messages.append({"role": msg["role"], "content": self._to_openai_content(msg["content"])})
 
         response = await self.client.post(
             "/chat/completions",
@@ -267,7 +290,8 @@ class ModelRouter:
         all_messages = []
         if system:
             all_messages.append({"role": "system", "content": system})
-        all_messages.extend(messages)
+        for msg in messages:
+            all_messages.append({"role": msg["role"], "content": self._to_openai_content(msg["content"])})
 
         response = await self.client.post(
             "/v1/chat/completions",

@@ -1827,7 +1827,7 @@ SELESAI"""
             await status.edit_text(f"❌ Gagal memproses dokumen: {e}")
 
     async def document_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handler untuk file dokumen (PDF, DOCX, TXT, dll)."""
+        """Handler untuk file dokumen (PDF, DOCX, TXT, dll) dan gambar (PNG, JPG)."""
         user_id = update.effective_user.id if update.effective_user else 0
         if not await check_user_allowed(user_id):
             return
@@ -1835,14 +1835,25 @@ SELESAI"""
         if not msg or not msg.document:
             return
 
-        doc      = msg.document
-        caption  = msg.caption or ""
-        fname    = doc.file_name or "file"
+        doc     = msg.document
+        caption = msg.caption or ""
+        fname   = doc.file_name or "file"
+
+        # Gambar dikirim sebagai dokumen (bukan foto) → gunakan vision
+        if is_image(fname):
+            mime = doc.mime_type or "image/jpeg"
+            await self._process_image_vision(
+                update, context,
+                file_id=doc.file_id,
+                media_type=mime,
+                caption=caption,
+            )
+            return
 
         if not is_supported(fname):
             await msg.reply_text(
                 f"⚠️ Format *{fname.split('.')[-1].upper()}* belum didukung.\n"
-                "Format yang bisa dibaca: *PDF, DOCX, TXT, MD, CSV*",
+                "Format yang bisa dibaca: *PDF, DOCX, TXT, MD, CSV, PNG, JPG*",
                 parse_mode="Markdown",
             )
             return
@@ -1855,8 +1866,57 @@ SELESAI"""
             file_size=doc.file_size or 0,
         )
 
+    async def _process_image_vision(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+        file_id: str,
+        media_type: str,
+        caption: str,
+    ):
+        """Unduh gambar, encode base64, kirim ke AI via vision."""
+        msg = update.message
+        if not msg:
+            return
+        user_id = update.effective_user.id if update.effective_user else 0
+
+        status = await msg.reply_text("🔍 Menganalisis gambar dengan AI...")
+        try:
+            tg_file = await context.bot.get_file(file_id)
+            photo_bytes = bytes(await tg_file.download_as_bytearray())
+            import base64
+            b64_data = base64.b64encode(photo_bytes).decode()
+
+            user_instruction = caption.strip() if caption else "Deskripsikan dan analisis gambar ini secara detail."
+            vision_message = {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": media_type,
+                            "data": b64_data,
+                        },
+                    },
+                    {"type": "text", "text": user_instruction},
+                ],
+            }
+
+            router = await self._ensure_model_router(user_id)
+            response, _ = await router.call(
+                messages=[vision_message],
+                temperature=0.5,
+                max_tokens=4096,
+            )
+            await status.delete()
+            await self._send_long(update, response)
+        except Exception as e:
+            logger.exception("Image vision error: %s", e)
+            await status.edit_text(f"❌ Gagal menganalisis gambar: {e}")
+
     async def photo_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handler untuk foto — kirim ke AI sebagai deskripsi konteks."""
+        """Handler untuk foto — analisis dengan AI vision."""
         user_id = update.effective_user.id if update.effective_user else 0
         if not await check_user_allowed(user_id):
             return
@@ -1864,13 +1924,13 @@ SELESAI"""
         if not msg or not msg.photo:
             return
 
-        caption = msg.caption or ""
-
-        await msg.reply_text(
-            "📸 Foto diterima.\n\n"
-            "⚠️ Untuk membaca teks dari foto (OCR), gunakan format dokumen (PDF/DOCX/TXT).\n"
-            f"Instruksi Anda: _{caption or 'tidak ada caption'}_",
-            parse_mode="Markdown",
+        # Telegram selalu kompres foto menjadi JPEG
+        photo = msg.photo[-1]
+        await self._process_image_vision(
+            update, context,
+            file_id=photo.file_id,
+            media_type="image/jpeg",
+            caption=msg.caption or "",
         )
 
     async def debug_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
