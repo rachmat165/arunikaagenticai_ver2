@@ -8,6 +8,7 @@ from src.config import settings
 from src.modules.rnd import RndHandler
 from src.tools.email_sender import send_email, test_smtp_connection
 from src.tools.surat_generator import SuratGenerator
+from src.tools.code_executor import execute_python, apply_improvement, restart_bot
 import aiosqlite
 import logging
 
@@ -299,6 +300,14 @@ Atau ketik pertanyaan bebas! 🤖"""
 
             context.user_data.pop("rnd_state", None)
             context.user_data.pop("rnd_partner", None)
+            return
+
+        # ── Code REPL state ────────────────────────────────────────────────
+        if (context.user_data or {}).get("code_state") == "waiting":
+            if context.user_data is not None:
+                context.user_data.pop("code_state", None)
+            if update.message:
+                await self._run_and_reply(update.message, user_message)
             return
 
         # ── Surat state machine ────────────────────────────────────────────
@@ -682,6 +691,269 @@ Atau ketik pertanyaan bebas! 🤖"""
             f"`/gambar <deskripsi>`",
             parse_mode="Markdown",
         )
+
+    # ──────────────────────────────────────────────────────────────────────
+    # CODE EXECUTOR  (/code)
+    # ──────────────────────────────────────────────────────────────────────
+
+    async def code_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user_id = update.effective_user.id if update.effective_user else 0
+        if not await check_user_allowed(user_id):
+            return
+        msg = update.message
+        if not msg:
+            return
+
+        inline_code = " ".join(context.args).strip() if context.args else ""
+        if inline_code:
+            await self._run_and_reply(msg, inline_code)
+            return
+
+        if context.user_data is not None:
+            context.user_data["code_state"] = "waiting"
+        await msg.reply_text(
+            "🐍 *Python REPL*\n\n"
+            "Kirim kode Python yang ingin dijalankan.\n"
+            "Kode berjalan di dalam venv proyek dengan akses ke semua modul bot.\n\n"
+            "_Contoh:_\n"
+            "```python\nfrom src.config import settings\nprint(settings.email_user)\n```",
+            parse_mode="Markdown",
+        )
+
+    async def _run_and_reply(self, msg, code: str):
+        # strip markdown code fences jika ada
+        code = code.strip()
+        for fence in ("```python", "```"):
+            if code.startswith(fence):
+                code = code[len(fence):]
+        if code.endswith("```"):
+            code = code[:-3]
+        code = code.strip()
+
+        status = await msg.reply_text("⚙️ Menjalankan kode...")
+        result = await execute_python(code, timeout=30)
+
+        if "error" in result:
+            await status.edit_text(f"❌ *Error:*\n```\n{result['error']}\n```",
+                                   parse_mode="Markdown")
+            return
+
+        out = result.get("stdout", "").strip()
+        err = result.get("stderr", "").strip()
+        rc  = result.get("returncode", 0)
+
+        lines = []
+        if out:
+            lines.append(f"📤 *Output:*\n```\n{out[:2000]}\n```")
+        if err:
+            lines.append(f"⚠️ *Stderr:*\n```\n{err[:800]}\n```")
+        if not out and not err:
+            lines.append("✅ Selesai (tidak ada output)")
+        if rc != 0:
+            lines.append(f"⚠️ Exit code: `{rc}`")
+
+        await status.edit_text("\n\n".join(lines) or "✅ Selesai",
+                               parse_mode="Markdown")
+
+    # ──────────────────────────────────────────────────────────────────────
+    # SELF-IMPROVEMENT  (/perbaiki)
+    # ──────────────────────────────────────────────────────────────────────
+
+    async def perbaiki_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user_id = update.effective_user.id if update.effective_user else 0
+        if not await check_user_allowed(user_id):
+            return
+        msg = update.message
+        if not msg:
+            return
+
+        request = " ".join(context.args).strip() if context.args else ""
+        if not request:
+            await msg.reply_text(
+                "🔧 *Self-Improvement Bot*\n\n"
+                "Format: `/perbaiki <deskripsi perubahan>`\n\n"
+                "✅ *Contoh:*\n"
+                "• `/perbaiki tambahkan perintah /cuaca`\n"
+                "• `/perbaiki ubah welcome message di /start`\n"
+                "• `/perbaiki tambah model GPT-4 Turbo di OpenRouter`\n\n"
+                "AI akan:\n"
+                "1. Membaca source code yang relevan\n"
+                "2. Membuat improvement script\n"
+                "3. Menampilkan preview perubahan\n"
+                "4. Menerapkan setelah konfirmasi",
+                parse_mode="Markdown",
+            )
+            return
+
+        await self._generate_improvement(msg, context, request)
+
+    async def _generate_improvement(self, msg, context, request: str):
+        from pathlib import Path
+        status = await msg.reply_text(
+            f"🤖 Menganalisis request: _{request}_\n\n⏳ Membaca source code...",
+            parse_mode="Markdown",
+        )
+
+        # Baca file-file kunci yang relevan
+        root = Path(__file__).parent.parent.parent
+        files_context = ""
+        key_files = [
+            "src/gateway/telegram_handler.py",
+            "src/agent/model_router.py",
+            "src/config.py",
+        ]
+        for fp in key_files:
+            full = root / fp
+            if full.exists():
+                content = full.read_text(encoding="utf-8")
+                files_context += f"\n\n### {fp} ###\n{content[:6000]}"
+
+        router = await self._ensure_model_router(
+            msg.from_user.id if msg.from_user else 0
+        )
+
+        await status.edit_text(
+            f"🤖 _{request}_\n\n⚙️ AI sedang menulis kode perbaikan...",
+            parse_mode="Markdown",
+        )
+
+        prompt = f"""Kamu adalah senior Python developer yang membantu memperbaiki bot Telegram bernama "Dewi" milik PT. Arunika Teknologi Global.
+
+Request perubahan: {request}
+
+Source code yang relevan:{files_context}
+
+Tugas: Buat SATU Python script yang:
+1. Menggunakan pathlib.Path dan open() untuk membaca dan menulis file
+2. Membuat perubahan yang diminta secara tepat dan minimal
+3. Tidak menghapus fungsionalitas yang sudah ada
+4. Hanya mengubah apa yang diperlukan
+
+Format output HANYA berikan:
+PENJELASAN:
+<jelaskan singkat apa yang diubah>
+
+SCRIPT:
+```python
+<python script yang lengkap dan siap dijalankan>
+```"""
+
+        try:
+            response, _ = await router.call(
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.2,
+                max_tokens=4000,
+            )
+
+            # Parse response
+            explanation = ""
+            script = ""
+            if "PENJELASAN:" in response:
+                explanation = response.split("PENJELASAN:")[1].split("SCRIPT:")[0].strip()
+            if "```python" in response:
+                script = response.split("```python")[1].split("```")[0].strip()
+            elif "SCRIPT:" in response:
+                script = response.split("SCRIPT:")[1].strip()
+
+            if not script:
+                await status.edit_text(
+                    f"❌ AI gagal menghasilkan script yang valid.\n\nResponse:\n{response[:500]}",
+                )
+                return
+
+            # Simpan di user_data
+            if context.user_data is not None:
+                context.user_data["improvement_script"] = script
+                context.user_data["improvement_request"] = request
+
+            preview_script = script[:1500] + ("\n..." if len(script) > 1500 else "")
+            keyboard = [
+                [InlineKeyboardButton("✅ Terapkan & Restart Bot", callback_data="improve_apply")],
+                [InlineKeyboardButton("🔍 Jalankan Test Dulu", callback_data="improve_test")],
+                [InlineKeyboardButton("❌ Batal", callback_data="improve_cancel")],
+            ]
+
+            await status.edit_text(
+                f"🔧 *Improvement Plan*\n\n"
+                f"📋 *Request:* _{request}_\n\n"
+                f"💡 *Penjelasan:*\n{explanation[:400]}\n\n"
+                f"📝 *Script ({len(script)} chars):*\n"
+                f"```python\n{preview_script}\n```",
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode="Markdown",
+            )
+
+        except Exception as e:
+            logger.exception("Improvement generation error: %s", e)
+            await status.edit_text(f"❌ Gagal generate improvement: {e}")
+
+    async def improve_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        query = update.callback_query
+        if not query or not query.data or context.user_data is None:
+            return
+        await query.answer()
+        data = query.data
+        ud = context.user_data
+        script  = ud.get("improvement_script", "")
+        request = ud.get("improvement_request", "")
+
+        if data == "improve_cancel":
+            ud.pop("improvement_script", None)
+            ud.pop("improvement_request", None)
+            await query.edit_message_text("❌ Improvement dibatalkan.")
+
+        elif data == "improve_test":
+            if not script:
+                await query.edit_message_text("❌ Tidak ada script.")
+                return
+            await query.edit_message_text("🧪 Menjalankan script dalam mode test (dry run)...")
+            # Jalankan tapi tandai DRY_RUN=1 agar script bisa cek
+            test_script = f"import os; os.environ['DRY_RUN']='1'\n{script}"
+            result = await execute_python(test_script, timeout=30)
+            out = result.get("stdout", "")
+            err = result.get("stderr", "")
+            success = result.get("success", False)
+            icon = "✅" if success else "❌"
+            keyboard = [
+                [InlineKeyboardButton("✅ Terapkan & Restart", callback_data="improve_apply")],
+                [InlineKeyboardButton("❌ Batal", callback_data="improve_cancel")],
+            ]
+            await query.edit_message_text(
+                f"{icon} *Test Result:*\n"
+                f"```\n{(out or err or 'no output')[:1500]}\n```",
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode="Markdown",
+            )
+
+        elif data == "improve_apply":
+            if not script:
+                await query.edit_message_text("❌ Tidak ada script.")
+                return
+            await query.edit_message_text(
+                f"⚙️ Menerapkan perubahan: _{request}_\n\nMohon tunggu...",
+                parse_mode="Markdown",
+            )
+            result = await apply_improvement(script, timeout=60)
+            if not result.get("success"):
+                err = result.get("stderr") or result.get("error") or "unknown error"
+                await query.edit_message_text(
+                    f"❌ *Gagal menerapkan:*\n```\n{err[:1000]}\n```",
+                    parse_mode="Markdown",
+                )
+                return
+
+            ud.pop("improvement_script", None)
+            ud.pop("improvement_request", None)
+            await query.edit_message_text(
+                f"✅ *Perubahan berhasil diterapkan!*\n\n"
+                f"📋 _{request}_\n\n"
+                f"🔄 Bot akan restart dalam 2 detik...",
+                parse_mode="Markdown",
+            )
+
+            import asyncio as _asyncio
+            await _asyncio.sleep(2)
+            restart_bot()   # exit process → start.bat akan restart otomatis
 
     # ──────────────────────────────────────────────────────────────────────
     # SURAT
@@ -1339,6 +1611,11 @@ Atau ketik pertanyaan bebas! 🤖"""
         app.add_handler(CommandHandler("image", self.gambar))
         app.add_handler(CommandHandler("email", self.email_cmd))
         app.add_handler(CommandHandler("kirim", self.email_cmd))
+        app.add_handler(CommandHandler("code", self.code_cmd))
+        app.add_handler(CommandHandler("python", self.code_cmd))
+        app.add_handler(CommandHandler("run", self.code_cmd))
+        app.add_handler(CommandHandler("perbaiki", self.perbaiki_cmd))
+        app.add_handler(CommandHandler("improve", self.perbaiki_cmd))
 
         app.add_handler(CallbackQueryHandler(self.provider_callback, pattern="^provider_"))
         app.add_handler(CallbackQueryHandler(self.setmodel_callback, pattern="^setmodel_"))
@@ -1346,6 +1623,7 @@ Atau ketik pertanyaan bebas! 🤖"""
         app.add_handler(CallbackQueryHandler(self.img_model_callback, pattern="^img_"))
         app.add_handler(CallbackQueryHandler(self.email_callback, pattern="^email_"))
         # surat_callback hanya untuk aksi akhir (download/email/batal)
+        app.add_handler(CallbackQueryHandler(self.improve_callback, pattern="^improve_"))
         app.add_handler(CallbackQueryHandler(self.surat_callback, pattern="^surat_(download|email|batal)$"))
         # module_callback: sek_, rnd_, surat_mode_ (mode pilihan surat), dll
         app.add_handler(CallbackQueryHandler(self.module_callback, pattern="^(sek_|rnd_|sosmed_|res_|auto_|surat_mode_)"))
