@@ -1,8 +1,8 @@
-import os
 from pathlib import Path
 from pydantic_settings import BaseSettings
 import yaml
 
+# Always relative to project root — works on any drive/machine
 BASE_DIR = Path(__file__).parent.parent
 
 class Settings(BaseSettings):
@@ -31,9 +31,11 @@ class Settings(BaseSettings):
 
     debug: bool = False
     log_level: str = "INFO"
+
+    # Paths default to relative BASE_DIR — no hardcoded drive letters
     database_path: str = str(BASE_DIR / "data" / "state.db")
     config_path: str = str(BASE_DIR / "data" / "config.yaml")
-    output_dir: str = str(Path("E:\\Output").resolve() if Path("E:\\").exists() else BASE_DIR / "output")
+    output_dir: str = str(BASE_DIR / "output")
 
     class Config:
         env_file = BASE_DIR / ".env"
@@ -54,10 +56,6 @@ def load_config_yaml() -> dict:
     return {}
 
 def ensure_directories():
+    for sub in ["", "surat", "presentasi", "sosmed", "rnd", "logs"]:
+        Path(settings.output_dir, sub).mkdir(parents=True, exist_ok=True)
     Path(settings.database_path).parent.mkdir(parents=True, exist_ok=True)
-    Path(settings.output_dir).mkdir(parents=True, exist_ok=True)
-    Path(settings.output_dir, "surat").mkdir(parents=True, exist_ok=True)
-    Path(settings.output_dir, "presentasi").mkdir(parents=True, exist_ok=True)
-    Path(settings.output_dir, "sosmed").mkdir(parents=True, exist_ok=True)
-    Path(settings.output_dir, "rnd").mkdir(parents=True, exist_ok=True)
-    Path(settings.output_dir, "logs").mkdir(parents=True, exist_ok=True)
