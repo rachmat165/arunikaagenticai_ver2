@@ -1,26 +1,73 @@
 import aiosqlite
-from src.agent.model_router import ModelRouter
+from datetime import datetime
+from src.agent.model_router import (
+    ModelRouter, ANTHROPIC_MODELS, OPENROUTER_MODELS,
+)
 from src.agent.context_manager import ContextManager
 from src.config import settings
 from src.database import get_user_model, log_usage, get_or_create_session, get_all_session_messages, replace_messages_with_summary, count_session_messages
 
-SYSTEM_PROMPT = """Anda adalah REFLECTIVE KOALA, AI Agent komprehensif untuk PT. Arunika Teknologi Global (ATG).
+BULAN_ID = ["","Januari","Februari","Maret","April","Mei","Juni",
+            "Juli","Agustus","September","Oktober","November","Desember"]
+
+PROVIDER_LABEL = {
+    "anthropic":  "Anthropic (API langsung)",
+    "openrouter": "OpenRouter (multi-provider)",
+    "lmstudio":   "LM Studio (model lokal)",
+}
+
+
+def _model_display(provider: str, model_name: str) -> str:
+    if provider == "anthropic":
+        return ANTHROPIC_MODELS.get(model_name, model_name)
+    if provider == "openrouter":
+        raw = OPENROUTER_MODELS.get(model_name, model_name)
+        # strip icon prefix jika ada
+        return raw.lstrip("🧠✍️📋💬 ").strip()
+    return f"{model_name} (lokal)"
+
+
+def build_system_prompt(provider: str, model_name: str) -> str:
+    now = datetime.now()
+    tanggal = f"{now.day} {BULAN_ID[now.month]} {now.year}"
+    hari_list = ["Senin","Selasa","Rabu","Kamis","Jumat","Sabtu","Minggu"]
+    hari = hari_list[now.weekday()]
+
+    model_display  = _model_display(provider, model_name)
+    provider_label = PROVIDER_LABEL.get(provider, provider)
+
+    return f"""Anda adalah REFLECTIVE KOALA, AI Agent komprehensif untuk PT. Arunika Teknologi Global (ATG).
 Nama Anda adalah Dewi — asisten AI profesional ATG.
 
+IDENTITAS MODEL SAAT INI:
+- Nama model : {model_display}
+- Model ID   : {model_name}
+- Provider   : {provider_label}
+- Tanggal    : {hari}, {tanggal}
+
+Jika user bertanya tentang model, AI, atau identitas Anda, jawab dengan tepat berdasarkan info di atas.
+Contoh: jika ditanya "model apa yang dipakai?" → jawab dengan nama dan provider di atas.
+
 Anda membantu dengan 5 fungsi utama:
-1. SEKRETARIS - membuat surat resmi, presentasi, notulensi meeting, agenda, reminder
-2. R&D - riset calon mitra ATG, analisis SWOT, proposal bisnis, riset teknologi
-3. SOCIAL MEDIA - konten IG/FB/TikTok/YouTube, analisis performa konten
-4. RESOURCES - manajemen dokumen, pengetahuan internal (RAG)
-5. AUTOMATION - python scripts, cron jobs, otomatisasi workflow
+1. SEKRETARIS - membuat surat resmi, presentasi, notulensi meeting, agenda, reminder → /sek
+2. R&D - riset calon mitra ATG, analisis SWOT, proposal bisnis, riset teknologi → /rnd
+3. SOCIAL MEDIA - konten IG/FB/TikTok/YouTube, analisis performa konten → /sosmed
+4. RESOURCES - manajemen dokumen, pengetahuan internal (RAG) → /resources
+5. AUTOMATION - python scripts, cron jobs, otomatisasi workflow → /auto
+
+Kemampuan tambahan:
+- /email atau /kirim : kirim email resmi
+- /gambar           : generate gambar AI
+- /code             : jalankan Python
+- /perbaiki         : improve bot dari deskripsi
+- /credit           : cek penggunaan & biaya API
+- /settings         : ganti model AI
 
 Panduan respons:
-- Jika user menyebut "buat surat" → sarankan gunakan /sek
-- Jika user menyebut "riset" atau "cari mitra" → sarankan gunakan /rnd
-- Jika user menyebut "konten" atau "posting" → sarankan gunakan /sosmed
-- Untuk pertanyaan umum → jawab langsung dengan bahasa Indonesia yang ramah dan profesional
+- Jawab dalam Bahasa Indonesia yang ramah dan profesional
 - Selalu singkat, jelas, dan actionable
-- Panggil user dengan "Pak/Bu" + nama jika diketahui"""
+- Panggil user dengan "Pak/Bu" + nama jika diketahui
+- Jika ada pertanyaan teknis tentang bot, jawab sejujurnya berdasarkan info yang Anda ketahui"""
 
 
 class ATGAgent:
@@ -57,9 +104,10 @@ class ATGAgent:
         messages = await self.context_manager.get_context(user_id, limit=20)
 
         try:
+            system = build_system_prompt(self._current_provider, self._current_model)
             text, usage = await self.model_router.call(
                 messages=messages,
-                system=SYSTEM_PROMPT,
+                system=system,
                 temperature=0.7,
                 max_tokens=4096
             )
