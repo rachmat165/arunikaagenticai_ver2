@@ -3370,6 +3370,66 @@ INSTRUKSI:
             parse_mode="Markdown",
         )
 
+        # ── Check if this is Arunika company document ──────────────────────────
+        is_arunika_doc = False
+        if any(keyword in file_name.lower() or keyword in extracted.lower()
+               for keyword in ["arunika", "pt. arunika", "perusahaan", "company profile"]):
+            is_arunika_doc = True
+
+        # Auto-extract Arunika company info & save to memory
+        if is_arunika_doc:
+            await status.edit_text(
+                f"✅ *Dokumen Arunika Terdeteksi!*\n\n"
+                f"📄 {ftype} · {pages} halaman\n\n"
+                f"🤖 Mengekstrak informasi perusahaan & simpan ke memori...",
+                parse_mode="Markdown",
+            )
+
+            # Extract company info dengan AI
+            router = await self._ensure_model_router(user_id)
+            extract_prompt = f"""Ekstrak informasi perusahaan dari dokumen berikut.
+Keluarkan dalam format terstruktur:
+
+NAMA_DIREKTUR: [nama lengkap]
+POSISI: [jabatan di Arunika]
+ALAMAT: [alamat lengkap perusahaan]
+TELEPON: [nomor telepon]
+EMAIL: [email resmi perusahaan]
+WEBSITE: [website/domain]
+INFORMASI_LAIN: [visi, misi, layanan utama, dll]
+
+--- DOKUMEN ---
+{extracted[:4000]}"""
+
+            try:
+                company_info, _ = await router.call(
+                    messages=[{"role": "user", "content": extract_prompt}],
+                    temperature=0.3,
+                    max_tokens=1500,
+                )
+
+                # Simpan ke memory menggunakan Hermes Memory tools
+                mem = self.agent.get_memory(user_id)
+                await mem.core_memory_append(
+                    "human",
+                    f"PT. Arunika Info:\n{company_info}"
+                )
+
+                await status.edit_text(
+                    f"✅ *Dokumen Arunika Disimpan!*\n\n"
+                    f"💾 Informasi perusahaan sudah otomatis tersimpan di memori AI\n"
+                    f"📋 Hermes Agent sekarang punya akses ke data Arunika",
+                    parse_mode="Markdown",
+                )
+                return
+            except Exception as e:
+                logger.exception("Arunika info extraction error: %s", e)
+                await status.edit_text(
+                    f"⚠️ Gagal ekstrak info otomatis: {e}\n\n"
+                    f"Lanjut dengan analisis manual...",
+                    parse_mode="Markdown",
+                )
+
         # Bangun prompt: gabungkan instruksi caption + isi file
         user_instruction = caption.strip() if caption else "Analisis dan ringkas isi dokumen ini."
         ai_prompt = (
