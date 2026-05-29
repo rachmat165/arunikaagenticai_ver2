@@ -4,6 +4,7 @@ from src.agent.model_router import (
     ModelRouter, ANTHROPIC_MODELS, OPENROUTER_MODELS,
 )
 from src.agent.context_manager import ContextManager
+from src.agent.letta_memory import LettaMemory, MEMORY_TOOL_SCHEMAS
 from src.config import settings
 from src.database import get_user_model, log_usage, get_or_create_session, get_all_session_messages, replace_messages_with_summary, count_session_messages
 
@@ -87,11 +88,25 @@ DAFTAR KEMAMPUAN NYATA SISTEM BOT INI
   • /agen <tugas> → Agen otonom multi-langkah
   • /h <tugas> → Hermes Agent dengan tool calling native
 
+🧠 LETTA MEMORY — INFINITE CONTEXT (otomatis aktif saat pakai Claude):
+  Memori jangka panjang tanpa batas diadaptasi dari Letta/MemGPT.
+  Tools yang dipanggil OTOMATIS saat diperlukan:
+  • core_memory_append / core_memory_replace → edit core memory (persona/human)
+  • archival_memory_insert / archival_memory_search → simpan & cari memori permanen
+  • conversation_search → cari riwayat percakapan lama
+  /memori → lihat & kelola memori | /recall → cari percakapan
+
+⏰ AGEN 24/7 — Tugas Otonom (via /agen24):
+  Jadwalkan tugas yang berjalan otomatis tanpa interaksi user.
+  Hasil dikirim ke Telegram saat tugas selesai.
+
 🤖 HERMES AGENT TOOLS (via /h):
   • web_search → Cari info di internet real-time
   • read_file → Baca file dari PATH MANA SAJA (P:\, C:\, D:\, path absolut/relatif)
               → Mendukung: PDF, DOCX, XLSX, PPTX, TXT, CSV, JSON, PY, dll
   • write_file → Tulis/simpan file baru
+  • generate_pdf → Buat file PDF dari hasil riset/analisis
+  • core_memory_* / archival_memory_* → tools Letta Memory (juga tersedia di Hermes)
   • remember → Simpan ke memori permanen
   • run_python → Eksekusi Python code
   • create_skill → Buat skill baru untuk bot
@@ -154,6 +169,12 @@ class ATGAgent:
         self.model_router: ModelRouter = None
         self._current_provider = "anthropic"
         self._current_model = "claude-sonnet-4-6"
+        self._memories: dict[int, LettaMemory] = {}   # user_id → LettaMemory
+
+    def get_memory(self, user_id: int) -> LettaMemory:
+        if user_id not in self._memories:
+            self._memories[user_id] = LettaMemory(user_id, settings.database_path)
+        return self._memories[user_id]
 
     async def _ensure_model(self, user_id: int):
         async with aiosqlite.connect(settings.database_path) as db:
@@ -178,29 +199,106 @@ class ATGAgent:
 
     async def chat(self, user_id: int, user_message: str) -> str:
         await self._ensure_model(user_id)
+
+        memory = self.get_memory(user_id)
+        memory_section = await memory.compile_for_prompt()
+
         await self.context_manager.add_to_context(user_id, "user", user_message)
         messages = await self.context_manager.get_context(user_id, limit=20)
 
-        try:
-            system = build_system_prompt(self._current_provider, self._current_model)
-            text, usage = await self.model_router.call(
-                messages=messages,
-                system=system,
-                temperature=0.7,
-                max_tokens=4096
-            )
-            # Save token usage to database
-            async with aiosqlite.connect(settings.database_path) as db:
-                await log_usage(
-                    db, user_id,
-                    self._current_provider,
-                    self._current_model,
-                    usage["input_tokens"],
-                    usage["output_tokens"],
-                    usage["cost_usd"]
+        base_system = build_system_prompt(self._current_provider, self._current_model)
+        system = base_system + memory_section
+
+        # ── Letta-style inner step loop ──────────────────────────────────────
+        # Untuk Anthropic: gunakan tool_use native
+        # Untuk provider lain: hanya text (tools belum didukung semua model)
+        MAX_TOOL_ROUNDS = 5
+        total_input = total_output = 0
+        total_cost  = 0.0
+        text        = ""
+
+        if self._current_provider == "anthropic":
+            # Anthropic native tool_use dengan memory tools
+            assert self.model_router is not None and self.model_router.client is not None
+            loop_messages = [{"role": m["role"], "content": m["content"]} for m in messages]
+
+            for _round in range(MAX_TOOL_ROUNDS):
+                payload = {
+                    "model":       self._current_model,
+                    "max_tokens":  4096,
+                    "system":      system,
+                    "messages":    loop_messages,
+                    "tools":       MEMORY_TOOL_SCHEMAS,
+                    "tool_choice": {"type": "auto"},
+                }
+                try:
+                    resp = await self.model_router.client.post("/v1/messages", json=payload)
+                    if resp.status_code != 200:
+                        raise RuntimeError(f"API error {resp.status_code}: {resp.text[:200]}")
+                    data = resp.json()
+                except Exception as e:
+                    text = f"⚠️ Gagal menghubungi Anthropic: {e}\n\nCoba ganti model via /settings"
+                    break
+
+                usage = data.get("usage", {})
+                total_input  += usage.get("input_tokens", 0)
+                total_output += usage.get("output_tokens", 0)
+
+                content_blocks = data.get("content", [])
+                stop_reason    = data.get("stop_reason", "end_turn")
+
+                # Ambil teks jawaban
+                text_parts = [b["text"] for b in content_blocks if b.get("type") == "text"]
+                if text_parts:
+                    text = "\n".join(text_parts)
+
+                if stop_reason != "tool_use":
+                    break   # tidak ada tool call → selesai
+
+                # Ada tool calls → eksekusi memory tools
+                tool_uses = [b for b in content_blocks if b.get("type") == "tool_use"]
+
+                # Tambahkan respons model ke loop
+                loop_messages.append({"role": "assistant", "content": content_blocks})
+
+                # Eksekusi setiap tool dan kumpulkan hasilnya
+                tool_results = []
+                for tu in tool_uses:
+                    tool_name = tu.get("name", "")
+                    tool_inp  = tu.get("input", {})
+                    tool_id   = tu.get("id", "")
+                    result    = await memory.execute_tool(tool_name, tool_inp)
+                    tool_results.append({
+                        "type":        "tool_result",
+                        "tool_use_id": tool_id,
+                        "content":     result,
+                    })
+
+                loop_messages.append({"role": "user", "content": tool_results})
+                # loop kembali untuk dapatkan respons final
+
+            from src.agent.model_router import calc_cost
+            total_cost = calc_cost(self._current_model, total_input, total_output)
+
+        else:
+            # Non-Anthropic: call biasa tanpa memory tools
+            try:
+                text, usage_dict = await self.model_router.call(
+                    messages=messages, system=system, temperature=0.7, max_tokens=4096
                 )
-        except Exception as e:
-            text = f"⚠️ Gagal menghubungi {self._current_provider}: {str(e)}\n\nCoba ganti model via /settings"
+                total_input  = usage_dict["input_tokens"]
+                total_output = usage_dict["output_tokens"]
+                total_cost   = usage_dict["cost_usd"]
+            except Exception as e:
+                text = f"⚠️ Gagal menghubungi {self._current_provider}: {e}\n\nCoba ganti model via /settings"
+
+        if not text:
+            text = "⚠️ Tidak ada respons dari model."
+
+        # Simpan usage dan respons
+        async with aiosqlite.connect(settings.database_path) as db:
+            await log_usage(db, user_id, self._current_provider, self._current_model,
+                            total_input, total_output, total_cost)
 
         await self.context_manager.add_to_context(user_id, "assistant", text)
         return text

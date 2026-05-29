@@ -13,6 +13,7 @@ from typing import Any
 from src.config import settings
 from src.tools.firecrawl import FirecrawlClient
 from src.tools.code_executor import execute_python
+from src.agent.letta_memory import MEMORY_TOOL_SCHEMAS as _LETTA_SCHEMAS
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +22,8 @@ MEMORY_FILE  = PROJECT_ROOT / "data" / "hermes_memory.md"
 
 # ── Tool schemas (format Anthropic — dikonversi ke OpenAI oleh model_router) ──
 
-TOOL_SCHEMAS = [
+# Gabungkan Hermes tools + Letta Memory tools
+TOOL_SCHEMAS = _LETTA_SCHEMAS + [
     {
         "name": "web_search",
         "description": "Cari informasi di internet menggunakan Firecrawl. Gunakan untuk mendapatkan data terkini, riset, berita, atau informasi yang tidak kamu ketahui.",
@@ -173,9 +175,17 @@ class ToolExecutor:
             if settings.firecrawl_api_key else None
         )
 
-    async def execute(self, tool_name: str, tool_input: dict, router=None, on_progress=None, on_file=None) -> str:
+    async def execute(self, tool_name: str, tool_input: dict, router=None, on_progress=None, on_file=None, memory=None) -> str:
         """Eksekusi satu tool call. Return string hasil."""
         try:
+            # ── Letta Memory Tools ───────────────────────────────────────────
+            if tool_name in ("core_memory_append", "core_memory_replace",
+                             "archival_memory_insert", "archival_memory_search",
+                             "conversation_search"):
+                if memory is None:
+                    return "❌ Memory tidak tersedia dalam sesi ini."
+                return await memory.execute_tool(tool_name, tool_input)
+
             if tool_name == "web_search":
                 return await self._web_search(**tool_input)
             elif tool_name == "read_file":

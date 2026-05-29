@@ -81,8 +81,73 @@ async def init_db(db_path: str):
             )
         """)
 
+        # ── Letta Memory: Core Memory Blocks ────────────────────────────────
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS memory_blocks (
+                id       TEXT PRIMARY KEY,
+                user_id  INTEGER NOT NULL,
+                label    TEXT NOT NULL,
+                value    TEXT NOT NULL DEFAULT '',
+                char_limit INTEGER DEFAULT 5000,
+                edited_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, label)
+            )
+        """)
+
+        # ── Letta Memory: Archival (Long-term) Memory ────────────────────────
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS passages (
+                id         TEXT PRIMARY KEY,
+                user_id    INTEGER NOT NULL,
+                content    TEXT NOT NULL,
+                tags       TEXT DEFAULT '[]',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # FTS5 virtual table for full-text search on passages
+        await db.execute("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS passages_fts
+            USING fts5(content, tags, content='passages', content_rowid='rowid')
+        """)
+
+        # Trigger: keep FTS5 in sync with passages
+        await db.execute("""
+            CREATE TRIGGER IF NOT EXISTS passages_ai
+            AFTER INSERT ON passages BEGIN
+                INSERT INTO passages_fts(rowid, content, tags)
+                VALUES (new.rowid, new.content, new.tags);
+            END
+        """)
+        await db.execute("""
+            CREATE TRIGGER IF NOT EXISTS passages_ad
+            AFTER DELETE ON passages BEGIN
+                INSERT INTO passages_fts(passages_fts, rowid, content, tags)
+                VALUES ('delete', old.rowid, old.content, old.tags);
+            END
+        """)
+
+        # ── 24/7 Agent: Scheduled Tasks ─────────────────────────────────────
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS scheduled_tasks (
+                id          TEXT PRIMARY KEY,
+                user_id     INTEGER NOT NULL,
+                chat_id     INTEGER NOT NULL,
+                task_desc   TEXT NOT NULL,
+                schedule    TEXT NOT NULL,
+                next_run    TIMESTAMP NOT NULL,
+                last_run    TIMESTAMP,
+                last_result TEXT,
+                status      TEXT DEFAULT 'active',
+                created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
         await db.execute("CREATE INDEX IF NOT EXISTS idx_messages_session_id ON messages(session_id)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_usage_user_id ON usage_log(user_id)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_passages_user ON passages(user_id)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_memory_blocks_user ON memory_blocks(user_id)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_next_run ON scheduled_tasks(next_run, status)")
         await db.commit()
 
 

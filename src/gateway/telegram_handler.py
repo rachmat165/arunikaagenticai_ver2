@@ -9,6 +9,7 @@ from src.modules.rnd import RndHandler
 from src.modules.karir import KarirHandler
 from src.modules.agen import AgenHandler
 from src.modules.hermes import HermesHandler
+from src.agent.agent24 import Agent24Runner, create_task, list_tasks, cancel_task
 from src.tools.email_sender import send_email, test_smtp_connection
 from src.tools.surat_generator import SuratGenerator
 from src.tools.code_executor import execute_python, apply_improvement, restart_bot
@@ -27,8 +28,30 @@ class TelegramGateway:
         self.agent = ATGAgent()
         self.rnd_module = RndHandler()
         self.karir_module = KarirHandler()
-        self.agen_module = AgenHandler()
-        self.hermes = HermesHandler()
+        self.agen_module  = AgenHandler()
+        self.hermes       = HermesHandler()
+
+        # ── 24/7 Agent Runner ────────────────────────────────────────────────
+        async def _agent_runner(user_id: int, task_desc: str) -> str:
+            router = await self._ensure_model_router(user_id)
+            from src.agent.letta_memory import LettaMemory
+            mem = LettaMemory(user_id, self.db_path)
+            result = await self.hermes.run(task_desc, router, user_id=user_id, memory=mem)
+            return result
+
+        async def _message_sender(chat_id: int, text: str):
+            from telegram import Bot
+            from src.config import settings as _s
+            bot = Bot(token=_s.telegram_bot_token)
+            for i in range(0, len(text), 4096):
+                await bot.send_message(chat_id=chat_id, text=text[i:i+4096], parse_mode="Markdown")
+
+        self.agent24 = Agent24Runner(
+            db_path=self.db_path,
+            agent_runner=_agent_runner,
+            message_sender=_message_sender,
+        )
+        self.agent24.start()
         self.surat_gen = SuratGenerator(settings.output_dir)
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -696,6 +719,16 @@ metadata:
             "📋 *DAFTAR FUNGSI REFLECTIVE KOALA*\n"
             f"_Model: {model_short} ({provider})_\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "🧠 *LETTA MEMORY — Infinite Context*\n"
+            "  Memori jangka panjang tanpa batas (diadaptasi dari Letta/MemGPT)\n"
+            "  ├ Core Memory: fakta tentang user & bot (selalu aktif)\n"
+            "  ├ Archival Memory: penyimpanan tak terbatas dengan full-text search\n"
+            "  ├ Auto-update: Claude mengedit memori sendiri saat diperlukan\n"
+            "  └ /memori — lihat, cari & kelola semua memori\n\n"
+            "⏰ *AGEN 24/7 — Tugas Otonom*\n"
+            "  /agen24 <tugas> | <jadwal> — jadwalkan tugas berjalan otomatis\n"
+            "  Format jadwal: 'setiap hari 08:00' | 'setiap senin 09:00' | 'setiap 2 jam'\n"
+            "  /agen24 list — lihat daftar tugas terjadwal\n\n"
 
             "🤖 *AI & MODEL*\n"
             "  /settings — Pilih provider: Anthropic / OpenRouter / LM Studio\n"
@@ -1150,11 +1183,13 @@ metadata:
             generated_files.append(file_path)
 
         try:
+            mem = self.agent.get_memory(user_id)
             result = await self.hermes.run(
                 task, router,
                 on_progress=on_progress,
                 on_file=on_file,
                 user_id=user_id,
+                memory=mem,
             )
             await msg.delete()
             await self._send_long(update, result)
@@ -1202,6 +1237,187 @@ metadata:
 
         result = await self.hermes.recall(query, self.db_path, user_id)
         await update.message.reply_text(result, parse_mode="Markdown")
+
+    # ──────────────────────────────────────────────────────────────────────
+    # LETTA MEMORY  (/memori) — tampilkan & kelola infinite context memory
+    # ──────────────────────────────────────────────────────────────────────
+
+    async def memori_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user_id = update.effective_user.id
+        if not await check_user_allowed(user_id):
+            return
+        if not update.message:
+            return
+
+        mem = self.agent.get_memory(user_id)
+        stats = await mem.get_stats()
+
+        args = context.args or []
+        sub  = args[0].lower() if args else ""
+
+        if sub == "arsip":
+            # Tampilkan archival memory
+            entries = await mem.get_archival_entries(limit=15)
+            if not entries:
+                await update.message.reply_text(
+                    "📚 *Archival Memory* — Kosong\n\n"
+                    "Anda belum memiliki memori jangka panjang.\n"
+                    "Saat chat dengan Claude, bot akan otomatis menyimpan info penting.",
+                    parse_mode="Markdown",
+                )
+                return
+            import json as _json
+            lines = [f"📚 *Archival Memory* ({len(entries)} entri terbaru):\n"]
+            for content, tags_json, created_at in entries:
+                try:
+                    tags = _json.loads(tags_json or "[]")
+                except Exception:
+                    tags = []
+                tag_str  = " ".join(f"`{t}`" for t in tags) if tags else ""
+                date_str = str(created_at)[:10]
+                lines.append(f"• {date_str} {tag_str}\n  _{content[:120]}_\n")
+            await self._send_long(update, "\n".join(lines))
+            return
+
+        if sub == "hapus":
+            target = args[1].lower() if len(args) > 1 else "semua"
+            if target in ("arsip", "archival"):
+                await mem.clear_archival()
+                await update.message.reply_text("✅ Archival memory dihapus.")
+            elif target in ("persona",):
+                await mem.clear_core("persona")
+                await update.message.reply_text("✅ Core memory 'persona' direset.")
+            elif target in ("human",):
+                await mem.clear_core("human")
+                await update.message.reply_text("✅ Core memory 'human' direset.")
+            else:
+                await mem.clear_core()
+                await mem.clear_archival()
+                await update.message.reply_text("✅ Semua memory direset ke default.")
+            return
+
+        # Default: tampilkan summary
+        persona_preview = stats["persona"][:300] + "..." if len(stats["persona"]) > 300 else stats["persona"]
+        human_preview   = stats["human"][:300]   + "..." if len(stats["human"]) > 300   else stats["human"]
+
+        text = (
+            "🧠 *LETTA MEMORY — Infinite Context*\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"📊 *Statistik:*\n"
+            f"  • Core Memory Persona: {stats['persona_chars']:,} / 5,000 karakter\n"
+            f"  • Core Memory Human:   {stats['human_chars']:,} / 5,000 karakter\n"
+            f"  • Archival Memory:     {stats['archival_count']:,} entri\n\n"
+            f"👤 *Persona (tentang bot):*\n_{persona_preview}_\n\n"
+            f"🙋 *Human (tentang Anda):*\n_{human_preview}_\n\n"
+            "📋 *Sub-perintah:*\n"
+            "  `/memori arsip` — lihat archival memory\n"
+            "  `/memori hapus arsip` — hapus archival memory\n"
+            "  `/memori hapus semua` — reset semua memory\n\n"
+            "💡 Memory diperbarui otomatis saat chat dengan model Claude."
+        )
+        await update.message.reply_text(text, parse_mode="Markdown")
+
+    # ──────────────────────────────────────────────────────────────────────
+    # 24/7 AGENT  (/agen24) — jadwalkan tugas otonom
+    # ──────────────────────────────────────────────────────────────────────
+
+    async def agen24_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user_id = update.effective_user.id
+        if not await check_user_allowed(user_id):
+            return
+        if not update.message:
+            return
+
+        args_str = " ".join(context.args).strip() if context.args else ""
+        chat_id  = update.effective_chat.id if update.effective_chat else user_id
+
+        if not args_str:
+            await update.message.reply_text(
+                "⏰ *Agen 24/7 — Tugas Otonom*\n\n"
+                "Jadwalkan tugas yang berjalan otomatis tanpa interaksi.\n"
+                "Hasil dikirim ke chat ini.\n\n"
+                "📋 *Format:*\n"
+                "`/agen24 <tugas> | <jadwal>`\n\n"
+                "🕐 *Format jadwal:*\n"
+                "• `setiap hari 08:00`\n"
+                "• `setiap senin 09:00`\n"
+                "• `setiap 2 jam`\n"
+                "• `sekali 2026-06-15 10:00`\n\n"
+                "✅ *Contoh:*\n"
+                "`/agen24 Riset berita AI terbaru dan buat ringkasan | setiap hari 07:30`\n"
+                "`/agen24 Cek harga dolar dan kirim laporan | setiap hari 08:00`\n\n"
+                "📋 *Kelola:*\n"
+                "`/agen24 list` — lihat semua tugas\n"
+                "`/agen24 batal <id>` — batalkan tugas",
+                parse_mode="Markdown",
+            )
+            return
+
+        # List tasks
+        if args_str.lower() in ("list", "daftar", "lihat"):
+            tasks = await list_tasks(self.db_path, user_id)
+            if not tasks:
+                await update.message.reply_text(
+                    "⏰ *Agen 24/7* — Belum ada tugas terjadwal.\n\n"
+                    "Buat tugas baru: `/agen24 <tugas> | <jadwal>`",
+                    parse_mode="Markdown",
+                )
+                return
+            lines = ["⏰ *Tugas Agen 24/7 Anda:*\n"]
+            for tid, task_desc, schedule, next_run, last_run, status in tasks:
+                icon = "✅" if status == "active" else "⏹"
+                nr_str = str(next_run)[:16] if next_run else "-"
+                lr_str = str(last_run)[:16] if last_run else "belum pernah"
+                lines.append(
+                    f"{icon} `{tid}` — _{task_desc[:50]}_\n"
+                    f"   Jadwal: {schedule}\n"
+                    f"   Next: {nr_str} | Last: {lr_str}\n"
+                )
+            await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+            return
+
+        # Cancel task
+        if args_str.lower().startswith("batal "):
+            tid = args_str.split(" ", 1)[1].strip()
+            ok = await cancel_task(self.db_path, tid, user_id)
+            if ok:
+                await update.message.reply_text(f"✅ Tugas `{tid}` dibatalkan.", parse_mode="Markdown")
+            else:
+                await update.message.reply_text(f"❌ Tugas `{tid}` tidak ditemukan.", parse_mode="Markdown")
+            return
+
+        # Buat task baru — format: "deskripsi tugas | jadwal"
+        if "|" not in args_str:
+            await update.message.reply_text(
+                "❌ Format salah. Gunakan:\n"
+                "`/agen24 <tugas> | <jadwal>`\n\n"
+                "_Contoh: /agen24 Riset AI terbaru | setiap hari 08:00_",
+                parse_mode="Markdown",
+            )
+            return
+
+        parts = args_str.split("|", 1)
+        task_desc    = parts[0].strip()
+        schedule_str = parts[1].strip()
+
+        result = await create_task(self.db_path, user_id, chat_id, task_desc, schedule_str)
+
+        if "error" in result:
+            await update.message.reply_text(
+                f"❌ *Gagal membuat tugas:*\n\n{result['error']}",
+                parse_mode="Markdown",
+            )
+            return
+
+        await update.message.reply_text(
+            f"✅ *Tugas 24/7 berhasil dibuat!*\n\n"
+            f"🆔 ID: `{result['id']}`\n"
+            f"📋 Tugas: _{result['task']}_\n"
+            f"🕐 Jadwal: {result['schedule']}\n"
+            f"⏰ Eksekusi pertama: *{result['next_run']}*\n\n"
+            f"Untuk membatalkan: `/agen24 batal {result['id']}`",
+            parse_mode="Markdown",
+        )
 
     # ──────────────────────────────────────────────────────────────────────
     # KARIR  (/karir) — Career-Ops methodology
@@ -2632,6 +2848,10 @@ SELESAI"""
         app.add_handler(CommandHandler("pdf", self.pdf_cmd))
         app.add_handler(CommandHandler("tools", self.tools_cmd))
         app.add_handler(CommandHandler("skill", self.tools_cmd))
+        app.add_handler(CommandHandler("memori", self.memori_cmd))
+        app.add_handler(CommandHandler("memory", self.memori_cmd))
+        app.add_handler(CommandHandler("agen24", self.agen24_cmd))
+        app.add_handler(CommandHandler("jadwal", self.agen24_cmd))
 
         app.add_handler(CallbackQueryHandler(self.provider_callback, pattern="^provider_"))
         app.add_handler(CallbackQueryHandler(self.orgroup_callback, pattern="^orgroup_"))

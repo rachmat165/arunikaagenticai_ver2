@@ -153,6 +153,7 @@ class HermesHandler:
         on_progress: Optional[Callable] = None,
         on_file: Optional[Callable] = None,
         user_id: int = 0,
+        memory=None,
     ) -> str:
         """
         Jalankan Hermes Agent Loop:
@@ -223,7 +224,8 @@ class HermesHandler:
                         await _op(msg)
 
                 tool_result = await self.executor.execute(
-                    name, inp, router=router, on_progress=_tool_progress, on_file=on_file
+                    name, inp, router=router, on_progress=_tool_progress,
+                    on_file=on_file, memory=memory
                 )
 
                 history.append((tool_round, name, "✅"))
