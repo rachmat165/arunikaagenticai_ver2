@@ -8,21 +8,64 @@ ANTHROPIC_MODELS = {
     "claude-opus-4-7": "Opus 4.7 (Terpintar)",
 }
 
-OPENROUTER_MODELS = {
-    # ── Reasoning ──────────────────────────────────────────────────────────
-    "deepseek/deepseek-r1":              "🧠 Deepseek R1 (Reasoning)",
-    "google/gemini-2.5-pro-preview":     "🧠 Gemini 2.5 Pro (Reasoning)",
-    # ── Dokumen & Surat ────────────────────────────────────────────────────
-    "anthropic/claude-3.5-sonnet":       "✍️ Claude 3.5 Sonnet (Surat/Dok)",
-    "openai/gpt-4o":                     "✍️ GPT-4o (Dokumen & Analisis)",
-    "qwen/qwen-2.5-72b-instruct":        "✍️ Qwen 2.5 72B (Multibahasa)",
-    # ── Presentasi & Konten ────────────────────────────────────────────────
-    "openai/gpt-4o-mini":                "📋 GPT-4o Mini (Presentasi Cepat)",
-    "google/gemini-2.0-flash-001":       "📋 Gemini 2.0 Flash (Konten Sosmed)",
-    # ── Umum & Hemat ──────────────────────────────────────────────────────
-    "meta-llama/llama-3.3-70b-instruct": "💬 Llama 3.3 70B (Umum)",
-    "mistralai/mistral-large":           "💬 Mistral Large (Umum)",
-    "deepseek/deepseek-chat":            "💬 Deepseek Chat (Hemat)",
+OPENROUTER_MODEL_GROUPS: dict[str, dict] = {
+    "anthropic": {
+        "label": "🤖 Anthropic (Claude)",
+        "models": {
+            "anthropic/claude-3.5-sonnet":  "Claude 3.5 Sonnet ⭐ (Seimbang)",
+            "anthropic/claude-3.5-haiku":   "Claude 3.5 Haiku (Cepat)",
+            "anthropic/claude-3-opus":      "Claude 3 Opus (Terpintar)",
+            "anthropic/claude-3-haiku":     "Claude 3 Haiku (Hemat)",
+        },
+    },
+    "gemini": {
+        "label": "🔵 Google (Gemini)",
+        "models": {
+            "google/gemini-2.5-pro-preview":  "Gemini 2.5 Pro (Terpintar)",
+            "google/gemini-2.0-flash-001":    "Gemini 2.0 Flash (Cepat)",
+            "google/gemini-flash-1.5":        "Gemini 1.5 Flash (Hemat)",
+        },
+    },
+    "openai": {
+        "label": "🟢 OpenAI (GPT)",
+        "models": {
+            "openai/gpt-4o":        "GPT-4o (Terbaik)",
+            "openai/gpt-4o-mini":   "GPT-4o Mini (Cepat)",
+            "openai/o3-mini":       "O3 Mini (Reasoning)",
+        },
+    },
+    "kimi": {
+        "label": "🌙 Kimi (Moonshot AI)",
+        "models": {
+            "moonshotai/moonshot-v1-8k":  "Kimi v1 8K",
+            "moonshotai/moonshot-v1-32k": "Kimi v1 32K (Dokumen Panjang)",
+        },
+    },
+    "qwen": {
+        "label": "🟠 Qwen (Alibaba)",
+        "models": {
+            "qwen/qwen-2.5-72b-instruct": "Qwen 2.5 72B (Terbaik)",
+            "qwen/qwq-32b":               "QwQ 32B (Reasoning)",
+            "qwen/qwen-2.5-7b-instruct":  "Qwen 2.5 7B (Hemat)",
+        },
+    },
+    "other": {
+        "label": "💡 Lainnya",
+        "models": {
+            "deepseek/deepseek-r1":              "DeepSeek R1 (Reasoning)",
+            "deepseek/deepseek-chat":            "DeepSeek Chat (Hemat)",
+            "meta-llama/llama-3.3-70b-instruct": "Llama 3.3 70B (Open Source)",
+            "mistralai/mistral-large":           "Mistral Large",
+            "x-ai/grok-3-beta":                  "Grok 3 Beta (xAI)",
+        },
+    },
+}
+
+# Flat dict untuk lookup display name & backward compatibility
+OPENROUTER_MODELS: dict[str, str] = {
+    model_id: display
+    for grp in OPENROUTER_MODEL_GROUPS.values()
+    for model_id, display in grp["models"].items()
 }
 
 # Model khusus untuk generate gambar (endpoint /v1/images/generations)
@@ -50,8 +93,18 @@ MODEL_PRICING = {
     "deepseek/deepseek-r1":              (0.55, 2.19),
     "google/gemini-2.5-pro-preview":     (1.25, 10.00),
     "anthropic/claude-3.5-sonnet":       (3.00, 15.00),
+    "anthropic/claude-3.5-haiku":        (0.80, 4.00),
+    "anthropic/claude-3-opus":           (15.00, 75.00),
+    "anthropic/claude-3-haiku":          (0.25, 1.25),
     "openai/gpt-4o-mini":                (0.15, 0.60),
+    "openai/o3-mini":                    (1.10, 4.40),
     "qwen/qwen-2.5-72b-instruct":        (0.56, 0.77),
+    "qwen/qwq-32b":                      (0.15, 0.60),
+    "qwen/qwen-2.5-7b-instruct":         (0.07, 0.21),
+    "google/gemini-flash-1.5":           (0.075, 0.30),
+    "moonshotai/moonshot-v1-8k":         (0.10, 0.10),
+    "moonshotai/moonshot-v1-32k":        (0.26, 0.26),
+    "x-ai/grok-3-beta":                  (3.00, 15.00),
     # Image models — billed per image, not per token
     "black-forest-labs/flux-1.1-pro":   (0.04, 0.0),
     "black-forest-labs/flux-schnell":   (0.004, 0.0),
@@ -200,7 +253,7 @@ class ModelRouter:
             return parts
         return content
 
-    async def call(self, messages: list, system: str = None,
+    async def call(self, messages: list, system: Optional[str] = None,
                    temperature: float = 0.7, max_tokens: int = 4096) -> Tuple[str, dict]:
         """Returns (response_text, usage_dict) where usage_dict has input_tokens, output_tokens, cost_usd."""
         if not self.client:
@@ -234,7 +287,7 @@ class ModelRouter:
         else:
             raise ValueError(f"Provider tidak dikenal: {self.provider}")
 
-    async def _call_anthropic(self, messages: list, system: str,
+    async def _call_anthropic(self, messages: list, system: Optional[str],
                                temperature: float, max_tokens: int) -> Tuple[str, dict]:
         payload = {
             "model": self.model_name,
@@ -245,6 +298,7 @@ class ModelRouter:
         if system:
             payload["system"] = system
 
+        assert self.client is not None
         response = await self.client.post("/v1/messages", json=payload)
         if response.status_code != 200:
             raise RuntimeError(f"Anthropic API error {response.status_code}: {response.text}")
@@ -259,7 +313,7 @@ class ModelRouter:
 
         return text, {"input_tokens": input_tokens, "output_tokens": output_tokens, "cost_usd": cost}
 
-    async def _call_openrouter(self, messages: list, system: str,
+    async def _call_openrouter(self, messages: list, system: Optional[str],
                                 temperature: float, max_tokens: int) -> Tuple[str, dict]:
         all_messages = []
         if system:
@@ -267,6 +321,7 @@ class ModelRouter:
         for msg in messages:
             all_messages.append({"role": msg["role"], "content": self._to_openai_content(msg["content"])})
 
+        assert self.client is not None
         response = await self.client.post(
             "/chat/completions",
             json={"model": self.model_name, "max_tokens": max_tokens,
@@ -285,7 +340,7 @@ class ModelRouter:
 
         return text, {"input_tokens": input_tokens, "output_tokens": output_tokens, "cost_usd": cost}
 
-    async def _call_lmstudio(self, messages: list, system: str,
+    async def _call_lmstudio(self, messages: list, system: Optional[str],
                               temperature: float, max_tokens: int) -> Tuple[str, dict]:
         all_messages = []
         if system:
@@ -293,6 +348,7 @@ class ModelRouter:
         for msg in messages:
             all_messages.append({"role": msg["role"], "content": self._to_openai_content(msg["content"])})
 
+        assert self.client is not None
         response = await self.client.post(
             "/v1/chat/completions",
             json={"model": self.model_name, "max_tokens": max_tokens,

@@ -1,7 +1,7 @@
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 from src.auth import check_user_allowed
-from src.agent import ATGAgent, ANTHROPIC_MODELS, OPENROUTER_MODELS, fetch_anthropic_models, fetch_lmstudio_models
+from src.agent import ATGAgent, ANTHROPIC_MODELS, OPENROUTER_MODELS, OPENROUTER_MODEL_GROUPS, fetch_anthropic_models, fetch_lmstudio_models
 from src.agent.model_router import OPENROUTER_IMAGE_MODELS, generate_image_openrouter
 from src.database import set_user_model, get_user_model, get_user_usage, get_usage_by_model
 from src.config import settings
@@ -154,21 +154,53 @@ Atau ketik pertanyaan bebas! 🤖"""
                 [InlineKeyboardButton(f"🖥️ {mid}", callback_data=f"model_{mid}")]
                 for mid, _ in lms_models
             ]
-        elif provider == "anthropic":
-            models = ANTHROPIC_MODELS
-            keyboard = [
-                [InlineKeyboardButton(display, callback_data=f"model_{model}")]
-                for model, display in models.items()
-            ]
-        else:
-            models = OPENROUTER_MODELS
-            keyboard = [
-                [InlineKeyboardButton(display, callback_data=f"model_{model}")]
-                for model, display in models.items()
-            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_text("🖥️ Pilih model LM Studio:", reply_markup=reply_markup)
 
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text(f"Pilih model {provider}:", reply_markup=reply_markup)
+        elif provider == "anthropic":
+            keyboard = [
+                [InlineKeyboardButton(display, callback_data=f"model_{model}")]
+                for model, display in ANTHROPIC_MODELS.items()
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_text("🤖 Pilih model Anthropic:", reply_markup=reply_markup)
+
+        else:
+            # OpenRouter — tampilkan grup dahulu
+            keyboard = [
+                [InlineKeyboardButton(grp["label"], callback_data=f"orgroup_{key}")]
+                for key, grp in OPENROUTER_MODEL_GROUPS.items()
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_text(
+                "🌐 *OpenRouter* — Pilih kategori model:",
+                reply_markup=reply_markup,
+                parse_mode="Markdown",
+            )
+
+    async def orgroup_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Tampilkan daftar model untuk satu grup OpenRouter."""
+        query = update.callback_query
+        if not query or not query.data:
+            return
+        await query.answer()
+
+        group_key = query.data.split("orgroup_", 1)[1]
+        grp = OPENROUTER_MODEL_GROUPS.get(group_key)
+        if not grp:
+            await query.edit_message_text("❌ Grup tidak ditemukan.")
+            return
+
+        keyboard = [
+            [InlineKeyboardButton(display, callback_data=f"model_{model_id}")]
+            for model_id, display in grp["models"].items()
+        ]
+        keyboard.append([InlineKeyboardButton("◀️ Kembali ke Kategori", callback_data="provider_openrouter")])
+
+        await query.edit_message_text(
+            f"🌐 OpenRouter › {grp['label']}\n\nPilih model:",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
 
     async def model_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
@@ -1981,6 +2013,7 @@ SELESAI"""
         app.add_handler(CommandHandler("improve", self.perbaiki_cmd))
 
         app.add_handler(CallbackQueryHandler(self.provider_callback, pattern="^provider_"))
+        app.add_handler(CallbackQueryHandler(self.orgroup_callback, pattern="^orgroup_"))
         app.add_handler(CallbackQueryHandler(self.setmodel_callback, pattern="^setmodel_"))
         app.add_handler(CallbackQueryHandler(self.model_callback, pattern="^model_"))
         app.add_handler(CallbackQueryHandler(self.img_model_callback, pattern="^img_"))
