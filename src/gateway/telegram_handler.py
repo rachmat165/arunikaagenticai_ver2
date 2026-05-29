@@ -1122,14 +1122,28 @@ metadata:
             return
 
         router = await self._ensure_model_router(user_id)
+
+        import html as _html
+        task_esc = _html.escape(task[:100])
         msg = await update.message.reply_text(
-            f"🔮 *Hermes Agent*\n\n📋 Tugas: `{task[:100]}`\n\n⚡ Memulai...",
-            parse_mode="Markdown",
+            f"🔮 <b>HERMES AGENT</b>\n\n"
+            f"💼 <i>{task_esc}</i>\n\n"
+            f"⚡ Memulai...",
+            parse_mode="HTML",
         )
 
         async def on_progress(t: str):
-            try: await msg.edit_text(t, parse_mode="Markdown")
-            except Exception: pass
+            try:
+                await msg.edit_text(t, parse_mode="HTML")
+            except Exception as _pe:
+                logger.debug("Progress edit failed: %s", _pe)
+                try:
+                    # Fallback: kirim tanpa formatting
+                    import re as _re
+                    plain = _re.sub(r"<[^>]+>", "", t)
+                    await msg.edit_text(plain)
+                except Exception:
+                    pass
 
         generated_files: list = []
         async def on_file(file_path: str):

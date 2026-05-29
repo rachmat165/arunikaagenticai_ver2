@@ -26,6 +26,10 @@ TOOL_ICONS = {
     "create_skill": "⚡",
 }
 
+def _h(text: str) -> str:
+    """Escape HTML special chars untuk Telegram HTML parse mode."""
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
 def _bar(done: int, total: int, width: int = 18) -> str:
     n = int(width * done / max(total, 1))
     return "█" * n + "░" * (width - n)
@@ -36,46 +40,44 @@ def _render_hermes_progress(
     total_rounds: int,
     current_tool: str,
     current_inp: dict,
-    history: list,          # [(round, tool_name, status)]
-    phase: str = "tool",    # "start" | "tool" | "finish"
+    history: list,
+    phase: str = "tool",
 ) -> str:
     task_short = (task[:65] + "…") if len(task) > 65 else task
     icon = TOOL_ICONS.get(current_tool, "🔧")
     bar  = _bar(round_num, total_rounds)
-    pct  = int(100 * round_num / total_rounds)
+    pct  = int(100 * round_num / max(total_rounds, 1))
 
-    # Ringkasan input (ambil value pertama yang paling informatif)
     inp_hint = ""
     for v in current_inp.values():
         s = str(v)
         if s:
-            # Tampilkan path/query dengan potongan yang bermakna
             inp_hint = (s[:55] + "…") if len(s) > 55 else s
             break
 
     lines = [
-        "🔮 *HERMES AGENT*",
-        f"━━━━━━━━━━━━━━━━━━━━",
-        f"💼 _{task_short}_",
+        "🔮 <b>HERMES AGENT</b>",
+        "━━━━━━━━━━━━━━━━━━━━",
+        f"💼 <i>{_h(task_short)}</i>",
         "",
-        f"`[{bar}]` {pct}%  •  Putaran {round_num}/{total_rounds}",
+        f"<code>[{bar}]</code>  {pct}%  •  Putaran {round_num}/{total_rounds}",
         "",
     ]
 
     if history or phase == "tool":
-        lines.append("📋 *Riwayat Tool:*")
+        lines.append("📋 <b>Riwayat Tool:</b>")
         for r, t, st in history:
             ti = TOOL_ICONS.get(t, "🔧")
-            lines.append(f"  {st} Putaran {r} — {ti} `{t}`")
+            lines.append(f"  {st} Putaran {r} — {ti} <code>{_h(t)}</code>")
         if phase == "tool":
-            lines.append(f"  🔄 Putaran {round_num} — {icon} `{current_tool}`")
+            lines.append(f"  🔄 Putaran {round_num} — {icon} <code>{_h(current_tool)}</code>")
             if inp_hint:
-                lines.append(f"       📥 `{inp_hint}`")
+                lines.append(f"       📥 <code>{_h(inp_hint)}</code>")
 
     if phase == "finish":
-        lines += ["", "✨ *Menyusun jawaban akhir...*"]
+        lines += ["", "✨ <b>Menyusun jawaban akhir...</b>"]
     elif phase == "start":
-        lines += ["", "⚡ *Memulai — membuat rencana...*"]
+        lines += ["", "⚡ <i>Memulai — membuat rencana...</i>"]
 
     return "\n".join(lines)
 
