@@ -21,9 +21,11 @@ OPENROUTER_MODEL_GROUPS: dict[str, dict] = {
     "gemini": {
         "label": "🔵 Google (Gemini)",
         "models": {
-            "google/gemini-2.5-pro-preview":  "Gemini 2.5 Pro (Terpintar)",
-            "google/gemini-2.0-flash-001":    "Gemini 2.0 Flash (Cepat)",
-            "google/gemini-flash-1.5":        "Gemini 1.5 Flash (Hemat)",
+            "google/gemini-2.5-pro":           "Gemini 2.5 Pro ⭐ (Terpintar)",
+            "google/gemini-2.5-flash":         "Gemini 2.5 Flash (Seimbang)",
+            "google/gemini-2.0-flash-001":     "Gemini 2.0 Flash (Cepat)",
+            "google/gemini-2.0-flash-lite-001":"Gemini 2.0 Flash Lite (Hemat)",
+            "google/gemma-4-31b-it:free":      "Gemma 4 31B (GRATIS)",
         },
     },
     "openai": {
@@ -86,7 +88,11 @@ MODEL_PRICING = {
     "claude-opus-4-7":           (15.00, 75.00),
     # OpenRouter — approximate
     "openai/gpt-4o":                      (5.00, 15.00),
-    "google/gemini-2.0-flash-001":        (0.075, 0.30),
+    "google/gemini-2.5-pro":              (1.25, 10.00),
+    "google/gemini-2.5-flash":            (0.30, 2.50),
+    "google/gemini-2.0-flash-001":        (0.10, 0.40),
+    "google/gemini-2.0-flash-lite-001":   (0.075, 0.30),
+    "google/gemma-4-31b-it:free":         (0.0, 0.0),
     "meta-llama/llama-3.3-70b-instruct":  (0.39, 0.39),
     "mistralai/mistral-large":            (2.00, 6.00),
     "deepseek/deepseek-chat":             (0.27, 1.10),
