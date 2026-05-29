@@ -3556,9 +3556,9 @@ AKTA_NOTARIS: [nomor akta, notaris, tanggal]
                     f"{self._render_progress_bar(3, 3, 'Complete ✅')}\n\n"
                     f"📎 *File:* {file_name}\n"
                     f"📄 {pages} halaman · {chars:,} karakter\n"
-                    f"{'🏢 Data Arunika → Core Memory (selalu aktif)\n' if is_arunika_doc else ''}"
-                    f"📚 → Archival Memory (bisa dicari dengan /recall)\n\n"
-                    f"_Gunakan `/recall {file_name.split('.')[0]}` untuk mencari nanti_",
+                    + ("🏢 Data Arunika → Core Memory (selalu aktif)\n" if is_arunika_doc else "")
+                    + "📚 → Archival Memory (bisa dicari dengan /recall)\n\n"
+                    + f"_Gunakan `/recall` untuk mencari nanti_",
                     parse_mode="Markdown",
                 )
                 return
