@@ -648,67 +648,122 @@ metadata:
 
         model_short = model_name.split("/")[-1] if "/" in model_name else model_name
 
-        text = (
+        part1 = (
             "📋 *DAFTAR FUNGSI REFLECTIVE KOALA*\n"
-            f"_Model aktif: {model_short} ({provider})_\n"
-            "─────────────────────────\n\n"
+            f"_Model: {model_short} ({provider})_\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
 
             "🤖 *AI & MODEL*\n"
-            "  /model — Pilih model Claude dari API key\n"
-            "  /settings — Pilih provider & model (Anthropic / OpenRouter)\n"
+            "  /settings — Pilih provider: Anthropic / OpenRouter / LM Studio\n"
+            "    ├ Anthropic: Haiku 4.5, Sonnet 4.6, Opus 4.7\n"
+            "    ├ OpenRouter: Claude, Gemini, GPT, Kimi, Qwen, dll\n"
+            "    └ LM Studio: model lokal di komputer\n"
+            "  /model — Shortcut pilih model\n"
             "  /compress — Padatkan riwayat percakapan (hemat token)\n"
-            "  /credit — Lihat estimasi penggunaan & biaya API\n\n"
+            "  /credit — Cek saldo & biaya API real-time\n\n"
 
-            "📁 *MODUL UTAMA*\n"
-            "  /sek — 📄 Sekretaris\n"
-            "    ├ Buat surat dinas\n"
-            "    ├ Buat presentasi\n"
+            "📄 *DOKUMEN & PDF*\n"
+            "  /pdf <judul> — Generate PDF dari teks/markdown APAPUN\n"
+            "    ├ Laporan riset, notulensi, artikel, strategi\n"
+            "    └ Kirim judul → kirim isi → PDF dikirim sebagai file\n"
+            "  /sek → Buat Surat — Surat resmi ATG (letterhead + logo PDF)\n"
+            "    ├ AI Draft Otomatis — deskripsikan → AI buat surat\n"
+            "    ├ Tulis Manual — isi form step-by-step\n"
+            "    ├ Download PDF langsung\n"
+            "    └ Kirim via Email SMTP\n"
+            "  Kirim file PDF/DOCX/TXT → AI baca & analisis isinya\n\n"
+
+            "📸 *GAMBAR, FOTO & SCREENSHOT*\n"
+            "  Kirim foto/screenshot sebagai FOTO → AI Vision analisis\n"
+            "  Kirim PNG/JPG/WebP sebagai FILE → AI Vision analisis\n"
+            "  /gambar <deskripsi> — Generate gambar AI\n"
+            "    ├ FLUX 1.1 Pro (kualitas terbaik)\n"
+            "    ├ FLUX Schnell (cepat & murah)\n"
+            "    └ DALL-E 3 (kreatif)\n\n"
+        )
+
+        part2 = (
+            "🔮 *HERMES AGENT* (via /h <tugas> atau /hermes <tugas>)\n"
+            "  Agen otonom dengan tool calling native — paling canggih\n"
+            "  Tools yang tersedia:\n"
+            "    ├ 🌐 web_search — Cari info real-time di internet\n"
+            "    ├ 📂 read_file — Baca file dari proyek bot\n"
+            "    ├ 💾 write_file — Tulis/simpan file baru\n"
+            "    ├ 🧠 remember — Simpan ke memori permanen antar sesi\n"
+            "    ├ 🐍 run_python — Eksekusi kode Python\n"
+            "    └ ⚡ create_skill — Buat skill baru secara mandiri\n"
+            "  Contoh: /h Riset AI tools 2025 & simpan ke laporan PDF\n\n"
+
+            "🤖 *AGEN OTONOM* (via /agen <tugas>)\n"
+            "  Plan → Research (web) → Synthesize → Deliver\n"
+            "  Contoh: /agen Bandingkan GPT-4o vs Gemini 2.5 Pro\n\n"
+
+            "🔍 *RISET & DEVELOPMENT* (via /rnd)\n"
+            "    ├ Riset calon mitra bisnis (web search + AI)\n"
+            "    ├ Analisis SWOT komprehensif\n"
+            "    ├ Buat proposal kemitraan\n"
+            "    ├ Riset teknologi terkini\n"
+            "    └ Scrape & ringkas website\n\n"
+
+            "💼 *KARIR* (via /karir)\n"
+            "    ├ Evaluasi lowongan kerja (A-F scoring — 7 blok analisis)\n"
+            "    ├ Buat CV profesional ATS-optimized\n"
+            "    ├ Riset perusahaan untuk persiapan interview\n"
+            "    └ Analisis evolusi bot (Hermes methodology)\n\n"
+
+            "📝 *SEKRETARIS* (via /sek)\n"
+            "    ├ Surat resmi PDF\n"
+            "    ├ Presentasi\n"
             "    ├ Notulensi meeting\n"
             "    ├ Set agenda\n"
             "    └ Set reminder\n\n"
-            "  /rnd — 🔬 Riset & Development\n"
-            "    ├ 🔍 Riset calon mitra (web search + AI)\n"
-            "    ├ 📈 Analisis SWOT (web search + AI)\n"
-            "    ├ 📋 Buat proposal kemitraan\n"
-            "    ├ 🔬 Riset teknologi terkini\n"
-            "    └ 🕷️ Scrape & ringkas website\n\n"
-            "  /sosmed — 📱 Social Media\n"
-            "    ├ Buat konten IG/FB/TikTok/YouTube\n"
+
+            "📱 *SOCIAL MEDIA* (via /sosmed)\n"
+            "    ├ Konten IG/FB/TikTok/YouTube\n"
             "    ├ Analisis performa konten\n"
             "    └ Content calendar\n\n"
-            "  /resources — 🗂 Knowledge Base\n"
+        )
+
+        part3 = (
+            "📧 *KOMUNIKASI*\n"
+            "  /email — Kirim email resmi via SMTP ATG\n"
+            "    ├ Tulis Manual\n"
+            "    ├ AI Draft email\n"
+            "    └ Test koneksi SMTP\n\n"
+
+            "🗂 *KNOWLEDGE BASE* (via /resources)\n"
             "    ├ Upload dokumen\n"
             "    ├ Semantic search (RAG)\n"
             "    └ Kelola produk & program ATG\n\n"
-            "  /auto — ⚙️ Automation\n"
+
+            "⚙️ *AUTOMATION* (via /auto)\n"
             "    ├ Jalankan Python script\n"
             "    ├ Set cron job\n"
             "    └ Web scraping\n\n"
 
-            "🛠 *UTILITAS*\n"
-            "  /fungsi — Tampilkan daftar ini\n"
-            "  /start — Menu utama\n"
-            "  /help — Panduan lengkap\n\n"
+            "🛠 *DEVELOPER & PENGEMBANGAN*\n"
+            "  /code — Python REPL (jalankan kode langsung)\n"
+            "  /perbaiki <deskripsi> — Bot improve dirinya sendiri\n"
+            "  /recall <kata> — Cari percakapan lama\n"
+            "  /tools — Lihat semua skill & tools (ringkasan)\n\n"
 
-            "💼 *SKILL BARU*\n"
-            "  /karir — Evaluasi lowongan, buat CV, riset perusahaan\n"
-            "    ├ Evaluasi Lowongan (A-F scoring — Career-Ops)\n"
-            "    ├ Buat CV Profesional (ATS-optimized)\n"
-            "    ├ Riset Perusahaan (untuk interview)\n"
-            "    └ Evolusi Bot (analisis & saran perbaikan)\n"
-            "  /agen — Agen Otonom multi-step (CowAgent)\n"
-            "    └ Kirim tugas kompleks → AI plan & execute otomatis\n"
-            "  /h atau /hermes — Hermes Agent (NousResearch)\n"
-            "    ├ Tool calling native: web search, file ops, Python\n"
-            "    ├ Buat & simpan skill baru secara mandiri\n"
-            "    └ Memori permanen antar sesi\n"
-            "  /recall — Cari percakapan lama (/recall <kata kunci>)\n\n"
+            "📊 *PENGATURAN & MONITORING*\n"
+            "  /settings — Provider & model AI\n"
+            "  /credit — Saldo & biaya API\n"
+            "  /compress — Padatkan konteks\n"
+            "  /fungsi — Daftar ini\n"
+            "  /start — Menu utama\n"
+            "  /help — Panduan\n\n"
+
             "💬 *CHAT BEBAS*\n"
-            "  Ketik pesan apapun → dijawab oleh AI\n"
-            "  Konteks percakapan tersimpan otomatis\n"
+            "  Ketik pertanyaan apapun → dijawab AI\n"
+            "  Konteks tersimpan otomatis\n"
+            "  Kirim foto → Vision AI analisis\n"
+            "  Kirim file → AI baca & analisis\n"
         )
 
-        await update.message.reply_text(text, parse_mode="Markdown")
+        for part in (part1, part2, part3):
+            await update.message.reply_text(part, parse_mode="Markdown")
 
     async def compress(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
@@ -2352,9 +2407,10 @@ SELESAI"""
             return
 
         if not is_supported(fname):
+            from src.tools.file_reader import FORMAT_LABEL
             await msg.reply_text(
-                f"⚠️ Format *{fname.split('.')[-1].upper()}* belum didukung.\n"
-                "Format yang bisa dibaca: *PDF, DOCX, TXT, MD, CSV, PNG, JPG*",
+                f"⚠️ Format *{fname.split('.')[-1].upper()}* belum didukung untuk ekstraksi teks.\n\n"
+                f"Format yang bisa dibaca:\n{FORMAT_LABEL}",
                 parse_mode="Markdown",
             )
             return
