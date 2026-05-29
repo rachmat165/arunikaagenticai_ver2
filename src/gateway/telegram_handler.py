@@ -457,13 +457,8 @@ Ketik pertanyaan bebas kapan saja! 🤖"""
             await update.message.chat.send_action("typing")
             router = await self._ensure_model_router(user_id)
 
-            async def make_progress(msg_obj):
-                async def on_progress(text: str):
-                    try:
-                        await msg_obj.edit_text(text, parse_mode="Markdown")
-                    except Exception:
-                        pass
-                return on_progress
+            # make_progress: tidak lagi digunakan, diganti per-state handler
+            pass
 
             if rnd_state == "riset":
                 msg = await update.message.reply_text(
@@ -579,24 +574,58 @@ Ketik pertanyaan bebas kapan saja! 🤖"""
             elif rnd_state == "tech":
                 msg = await update.message.reply_text(
                     f"🔬 *Riset Teknologi:* `{user_message}`\n\n"
-                    "⏱ Estimasi: 20\\-30 detik\n"
-                    "🌐 *Step 1/3* — Searching latest tech news\\.\\.\\.",
-                    parse_mode="MarkdownV2"
+                    f"{self._render_progress_bar(1, 3, 'Searching tech data')}\n\n"
+                    "Mencari informasi teknologi terkini...",
+                    parse_mode="Markdown"
                 )
-                result = await self.rnd_module.riset_teknologi(user_message, router, on_progress=await make_progress(msg))
-                await msg.delete()
+                step_counter = [1]
+                async def progress_tech(text: str):
+                    step_counter[0] += 1
+                    try:
+                        await msg.edit_text(
+                            f"🔬 *Riset Teknologi:* `{user_message}`\n\n"
+                            f"{self._render_progress_bar(min(step_counter[0], 3), 3, text)}\n\n"
+                            f"{text}...",
+                            parse_mode="Markdown"
+                        )
+                    except Exception:
+                        pass
+                result = await self.rnd_module.riset_teknologi(user_message, router, on_progress=progress_tech)
+                await msg.edit_text(
+                    f"🔬 *Riset Teknologi:* `{user_message}`\n\n"
+                    f"{self._render_progress_bar(3, 3, 'Complete ✅')}\n\n"
+                    "Hasil riset siap:",
+                    parse_mode="Markdown"
+                )
                 await self._send_long(update, result)
 
             elif rnd_state == "scrape":
                 url = user_message if user_message.startswith("http") else "https://" + user_message
                 msg = await update.message.reply_text(
                     f"🕷️ *Scraping:* `{url}`\n\n"
-                    "⏱ Estimasi: 15\\-20 detik\n"
-                    "🌐 Mengambil konten website\\.\\.\\.",
-                    parse_mode="MarkdownV2"
+                    f"{self._render_progress_bar(1, 2, 'Fetching website')}\n\n"
+                    "Mengambil konten website...",
+                    parse_mode="Markdown"
                 )
-                result = await self.rnd_module.scrape_website(url, router, on_progress=await make_progress(msg))
-                await msg.delete()
+                step_counter = [1]
+                async def progress_scrape(text: str):
+                    step_counter[0] += 1
+                    try:
+                        await msg.edit_text(
+                            f"🕷️ *Scraping:* `{url}`\n\n"
+                            f"{self._render_progress_bar(min(step_counter[0], 2), 2, text)}\n\n"
+                            f"{text}...",
+                            parse_mode="Markdown"
+                        )
+                    except Exception:
+                        pass
+                result = await self.rnd_module.scrape_website(url, router, on_progress=progress_scrape)
+                await msg.edit_text(
+                    f"🕷️ *Scraping:* `{url}`\n\n"
+                    f"{self._render_progress_bar(2, 2, 'Complete ✅')}\n\n"
+                    "Hasil scraping siap:",
+                    parse_mode="Markdown"
+                )
                 await self._send_long(update, result)
 
             context.user_data.pop("rnd_state", None)
@@ -688,7 +717,7 @@ Ketik pertanyaan bebas kapan saja! 🤖"""
                             caption=f"📄 *{title}*\n_PDF dari hasil percakapan — Reflective Koala ATG_",
                             parse_mode="Markdown",
                         )
-                    await status.delete()
+                    await status.edit_text("📄 PDF selesai dibuat ✅")
                 except Exception as e:
                     logger.exception("Auto PDF error: %s", e)
                     await status.edit_text(
@@ -1297,7 +1326,7 @@ metadata:
             )
             try:
                 pdf_path = await generate_document_pdf_async(title, content)
-                await status.delete()
+                await status.edit_text(f"📄 *{title}* — PDF selesai ✅", parse_mode="Markdown")
                 with open(pdf_path, "rb") as f:
                     safe_name = "".join(
                         c if c.isalnum() or c in " -_" else "" for c in title[:40]
@@ -1448,7 +1477,15 @@ metadata:
                 user_id=user_id,
                 memory=mem,
             )
-            await msg.delete()
+            try:
+                await msg.edit_text(
+                    f"🔮 <b>HERMES AGENT</b>\n\n"
+                    f"💼 <i>{task_esc}</i>\n\n"
+                    f"✅ Selesai — hasil di bawah ini.",
+                    parse_mode="HTML",
+                )
+            except Exception:
+                pass
             await self._send_long(update, result)
             # Kirim file PDF yang dihasilkan tool generate_pdf
             for fp in generated_files:
@@ -1692,14 +1729,29 @@ metadata:
         if args:
             router = await self._ensure_model_router(user_id)
             msg = await update.message.reply_text(
-                f"💼 *Evaluasi Pekerjaan*\n\n⏳ Menganalisis...",
+                f"💼 *Evaluasi Pekerjaan*\n\n"
+                f"{self._render_progress_bar(1, 3, 'Analyzing job')}\n\n"
+                "Menganalisis lowongan kerja...",
                 parse_mode="Markdown",
             )
+            step_counter = [1]
             async def _prog(t):
-                try: await msg.edit_text(t, parse_mode="Markdown")
+                step_counter[0] += 1
+                try:
+                    await msg.edit_text(
+                        f"💼 *Evaluasi Pekerjaan*\n\n"
+                        f"{self._render_progress_bar(min(step_counter[0], 3), 3, t)}\n\n"
+                        f"{t}...",
+                        parse_mode="Markdown"
+                    )
                 except Exception: pass
             result = await self.karir_module.eval_pekerjaan(args, router, on_progress=_prog)
-            await msg.delete()
+            await msg.edit_text(
+                f"💼 *Evaluasi Pekerjaan*\n\n"
+                f"{self._render_progress_bar(3, 3, 'Complete ✅')}\n\n"
+                "Hasil evaluasi siap:",
+                parse_mode="Markdown"
+            )
             await self._send_long(update, result)
             return
 
@@ -1810,7 +1862,11 @@ metadata:
             else:
                 result = "❌ State tidak dikenal."
 
-            await status.delete()
+            await status.edit_text(
+                f"{self._render_progress_bar(3, 3, 'Complete ✅')}\n\n"
+                "Hasil siap:",
+                parse_mode="Markdown"
+            )
             await self._send_long(update, result)
 
         except Exception as e:
@@ -1856,7 +1912,12 @@ metadata:
 
         try:
             result = await self.agen_module.run(task, router, on_progress=on_progress)
-            await msg.delete()
+            await msg.edit_text(
+                f"🤖 *Agen Otonom*\n\n"
+                f"{self._render_progress_bar(4, 4, 'Complete ✅')}\n\n"
+                "Tugas selesai — hasil di bawah ini:",
+                parse_mode="Markdown"
+            )
             await self._send_long(update, result)
         except Exception as e:
             logger.exception("Agen error: %s", e)
@@ -1901,10 +1962,15 @@ metadata:
         )
         try:
             image_url = await generate_image_openrouter(prompt, model=img_model)
-            await msg.delete()
+            await msg.edit_text(
+                f"🎨 *Generate Gambar*\n\n"
+                f"{self._render_progress_bar(2, 2, 'Complete ✅')}\n\n"
+                f"Gambar selesai dibuat:",
+                parse_mode="Markdown"
+            )
             await update.message.reply_photo(
                 photo=image_url,
-                caption=f"🎨 *Gambar selesai!*\n📝 _{prompt}_",
+                caption=f"🎨 *{prompt[:80]}*\n_Model: {model_label}_",
                 parse_mode="Markdown",
             )
         except Exception as e:
@@ -2307,7 +2373,7 @@ SELESAI"""
                     "penandatangan_jabatan": ttd_jab,
                     "isi":                   isi,
                 })
-                await status.delete()
+                await status.edit_text("📄 Draft surat selesai ✅\nMenampilkan preview...")
                 await self._show_surat_preview(update, context, draft)
 
             except Exception as e:
@@ -2525,7 +2591,7 @@ INSTRUKSI:
 
                 surat_gen["content"] = result
                 ud["surat_generated"] = surat_gen
-                await status.delete()
+                await status.edit_text("✅ Revisi surat selesai!")
 
                 # Tampilkan surat yang sudah direvisi dengan opsi download/edit
                 keyboard = [
@@ -2590,7 +2656,7 @@ INSTRUKSI:
                     attachment_path=pdf_path,
                 )
 
-                await status.delete()
+                await status.edit_text("📧 Email surat selesai dikirim ✅")
 
                 if "error" in result:
                     await msg.reply_text(
@@ -2836,7 +2902,7 @@ INSTRUKSI:
                 draft["to"] = to_val
                 draft["subject"] = subject_val
                 draft["body"] = "\n".join(body_lines).strip()
-                await status.delete()
+                await status.edit_text("📧 Draft email selesai ✅\nMenampilkan preview...")
                 await self._show_email_preview(update, context, draft, ai_generated=True)
             except Exception as e:
                 await status.edit_text(f"❌ Gagal membuat draft AI: {e}")
@@ -3475,7 +3541,11 @@ INFORMASI_LAIN: [visi, misi, layanan utama, dll]
                 temperature=0.5,
                 max_tokens=4096,
             )
-            await status.delete()
+            await status.edit_text(
+                f"📎 *{file_name}* — selesai dianalisis\n"
+                f"{self._render_progress_bar(2, 2, 'Complete ✅')}",
+                parse_mode="Markdown"
+            )
             await self._send_long(update, response)
         except Exception as e:
             logger.exception("Attachment AI error: %s", e)
@@ -3565,7 +3635,11 @@ INFORMASI_LAIN: [visi, misi, layanan utama, dll]
                 temperature=0.5,
                 max_tokens=4096,
             )
-            await status.delete()
+            await status.edit_text(
+                f"📸 Gambar selesai dianalisis\n"
+                f"{self._render_progress_bar(2, 2, 'Complete ✅')}",
+                parse_mode="Markdown"
+            )
             await self._send_long(update, response)
         except Exception as e:
             logger.exception("Image vision error: %s", e)

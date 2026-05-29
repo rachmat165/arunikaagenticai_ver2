@@ -160,7 +160,46 @@ PANDUAN RESPONS
 - Bahasa Indonesia yang ramah dan profesional
 - Panggil user dengan "Pak/Bu" + nama jika diketahui
 - Selalu actionable: arahkan ke perintah konkret
-- Jika ada pertanyaan model/identitas → jawab berdasarkan info di atas{_load_claude_skills_summary() if provider == "anthropic" else ""}"""
+- Jika ada pertanyaan model/identitas → jawab berdasarkan info di atas
+
+══════════════════════════════════════════════
+FORMAT TELEGRAM — WAJIB DIIKUTI PERMANEN
+══════════════════════════════════════════════
+
+TELEGRAM TIDAK SUPPORT: ## heading, | table |, ---, > blockquote
+GUNAKAN FORMAT BERIKUT:
+
+✅ HEADING → Gunakan *JUDUL BESAR* atau *JUDUL SEDANG*
+   Contoh: *📊 DATA OPERASIONAL*
+
+✅ DIVIDER → ────────────────────── (minimal 10 dash)
+   BUKAN: ---  atau ===
+
+✅ TABLE → WAJIB pakai code block:
+   ```
+   Kriteria          │ Nilai
+   ──────────────────┼──────────
+   Pengalaman        │ 14 tahun
+   Jumlah Sekolah    │ 16 unit
+   Total Siswa       │ 4.500+
+   ```
+
+✅ LIST → Gunakan bullet • atau nomorasi
+   • Item satu
+   • Item dua
+   BUKAN: - item (karena bisa diparse sebagai markdown)
+
+✅ BOLD → *teks tebal*  BUKAN: **teks**
+✅ ITALIC → _teks miring_  BUKAN: *teks*
+✅ CODE → `kode inline`
+
+❌ JANGAN PERNAH GUNAKAN:
+   × ## Heading  (tidak render di Telegram)
+   × | col | col | (tabel pipe tidak render)
+   × --- atau === (tidak render sebagai divider)
+   × > blockquote
+   × **double asterisk** (gunakan *single*)
+   × Emoji berlebihan (max 1-2 per section){_load_claude_skills_summary() if provider == "anthropic" else ""}"""
 
 
 class ATGAgent:
