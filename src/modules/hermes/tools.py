@@ -147,13 +147,13 @@ class ToolExecutor:
             if settings.firecrawl_api_key else None
         )
 
-    async def execute(self, tool_name: str, tool_input: dict, router=None) -> str:
+    async def execute(self, tool_name: str, tool_input: dict, router=None, on_progress=None) -> str:
         """Eksekusi satu tool call. Return string hasil."""
         try:
             if tool_name == "web_search":
                 return await self._web_search(**tool_input)
             elif tool_name == "read_file":
-                return await self._read_file_async(router=router, **tool_input)
+                return await self._read_file_async(router=router, on_progress=on_progress, **tool_input)
             elif tool_name == "write_file":
                 return self._write_file(**tool_input)
             elif tool_name == "remember":
@@ -243,7 +243,7 @@ class ToolExecutor:
             f"---\n{text}"
         )
 
-    async def _read_file_async(self, path: str, router=None) -> str:
+    async def _read_file_async(self, path: str, router=None, on_progress=None) -> str:
         """Wrapper async untuk _read_file — otomatis fallback ke Vision jika PDF scan."""
         import asyncio
 
@@ -282,7 +282,7 @@ class ToolExecutor:
                 if ("scan" in err.lower() or "gambar" in err.lower()
                         or "tidak mengandung teks" in err.lower()):
                     if router:
-                        return await self._read_pdf_via_vision(file_path, router)
+                        return await self._read_pdf_via_vision(file_path, router, on_progress=on_progress)
                     return (
                         f"⚠️ PDF ini adalah scan/gambar.\n"
                         f"Gunakan `/h` dengan model yang mendukung Vision "
@@ -299,7 +299,7 @@ class ToolExecutor:
         # Format lain — gunakan _read_file sync
         return await asyncio.to_thread(self._read_file, path)
 
-    async def _read_pdf_via_vision(self, file_path: Path, router) -> str:
+    async def _read_pdf_via_vision(self, file_path: Path, router, on_progress=None) -> str:
         """Render halaman PDF scan sebagai gambar → analisis tiap halaman via Vision AI."""
         import base64
         import io
@@ -330,8 +330,31 @@ class ToolExecutor:
         except Exception as e:
             return f"❌ Gagal render PDF: {e}"
 
-        analyses = []
+        def _page_bar(done: int, total: int, w: int = 16) -> str:
+            n = int(w * done / max(total, 1))
+            return "█" * n + "░" * (w - n)
+
+        analyses   = []
+        done_pages = []
+        total_pages_to_read = len(pages_b64)
+
         for i, b64 in enumerate(pages_b64, 1):
+            # Progress update sebelum analisis halaman ini
+            if on_progress:
+                bar = _page_bar(i - 1, total_pages_to_read)
+                pct = int(100 * (i - 1) / total_pages_to_read)
+                done_str = ", ".join(str(p) for p in done_pages[-5:])
+                done_hint = f"  ✅ Hal {done_str}\n" if done_pages else ""
+                await on_progress(
+                    f"📸 *MEMBACA PDF VIA VISION AI*\n"
+                    f"━━━━━━━━━━━━━━━━━━━━\n"
+                    f"📄 `{file_path.name}`\n"
+                    f"_{n_pages} halaman total_\n\n"
+                    f"`[{bar}]` {pct}%\n"
+                    f"🔄 Halaman {i}/{total_pages_to_read} — menganalisis...\n\n"
+                    f"{done_hint}"
+                )
+
             vision_msg = {
                 "role": "user",
                 "content": [
@@ -356,8 +379,22 @@ class ToolExecutor:
                     max_tokens=2048,
                 )
                 analyses.append(f"=== Halaman {i}/{n_pages} ===\n{text}")
+                done_pages.append(i)
             except Exception as e:
                 analyses.append(f"=== Halaman {i}/{n_pages} === [Vision error: {e}]")
+                done_pages.append(i)
+
+        # Progress: selesai semua halaman
+        if on_progress:
+            bar = _page_bar(total_pages_to_read, total_pages_to_read)
+            await on_progress(
+                f"📸 *MEMBACA PDF VIA VISION AI*\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"📄 `{file_path.name}`\n\n"
+                f"`[{bar}]` 100%\n"
+                f"✅ Semua {total_pages_to_read} halaman selesai dibaca!\n\n"
+                f"✨ Menyusun resume..."
+            )
 
         combined = "\n\n".join(analyses)
         return (

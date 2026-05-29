@@ -15,7 +15,69 @@ from src.config import settings
 from src.modules.hermes.tools import TOOL_SCHEMAS, ToolExecutor, load_memory, load_skills_context
 
 logger = logging.getLogger(__name__)
-MAX_TOOL_ROUNDS = 8    # max berapa kali loop tool sebelum force-stop
+MAX_TOOL_ROUNDS = 8
+
+TOOL_ICONS = {
+    "web_search":   "🌐",
+    "read_file":    "📂",
+    "write_file":   "💾",
+    "remember":     "🧠",
+    "run_python":   "🐍",
+    "create_skill": "⚡",
+}
+
+def _bar(done: int, total: int, width: int = 18) -> str:
+    n = int(width * done / max(total, 1))
+    return "█" * n + "░" * (width - n)
+
+def _render_hermes_progress(
+    task: str,
+    round_num: int,
+    total_rounds: int,
+    current_tool: str,
+    current_inp: dict,
+    history: list,          # [(round, tool_name, status)]
+    phase: str = "tool",    # "start" | "tool" | "finish"
+) -> str:
+    task_short = (task[:65] + "…") if len(task) > 65 else task
+    icon = TOOL_ICONS.get(current_tool, "🔧")
+    bar  = _bar(round_num, total_rounds)
+    pct  = int(100 * round_num / total_rounds)
+
+    # Ringkasan input (ambil value pertama yang paling informatif)
+    inp_hint = ""
+    for v in current_inp.values():
+        s = str(v)
+        if s:
+            # Tampilkan path/query dengan potongan yang bermakna
+            inp_hint = (s[:55] + "…") if len(s) > 55 else s
+            break
+
+    lines = [
+        "🔮 *HERMES AGENT*",
+        f"━━━━━━━━━━━━━━━━━━━━",
+        f"💼 _{task_short}_",
+        "",
+        f"`[{bar}]` {pct}%  •  Putaran {round_num}/{total_rounds}",
+        "",
+    ]
+
+    if history or phase == "tool":
+        lines.append("📋 *Riwayat Tool:*")
+        for r, t, st in history:
+            ti = TOOL_ICONS.get(t, "🔧")
+            lines.append(f"  {st} Putaran {r} — {ti} `{t}`")
+        if phase == "tool":
+            lines.append(f"  🔄 Putaran {round_num} — {icon} `{current_tool}`")
+            if inp_hint:
+                lines.append(f"       📥 `{inp_hint}`")
+
+    if phase == "finish":
+        lines += ["", "✨ *Menyusun jawaban akhir...*"]
+    elif phase == "start":
+        lines += ["", "⚡ *Memulai — membuat rencana...*"]
+
+    return "\n".join(lines)
 
 HERMES_SYSTEM = """Anda adalah HERMES — agen AI otonom dari Reflective Koala ATG.
 
@@ -94,15 +156,16 @@ class HermesHandler:
         system = _build_system(memory, skills)
         provider = router.provider
 
-        messages = [{"role": "user", "content": task}]
+        messages   = [{"role": "user", "content": task}]
         tool_round = 0
         final_text = ""
+        history: list = []   # [(round, tool_name, status_emoji)]
 
         if on_progress:
             await on_progress(
-                f"🔮 *Hermes Agent*\n\n"
-                f"📋 Tugas: `{task[:100]}`\n\n"
-                f"⚡ Memulai agentic loop..."
+                _render_hermes_progress(
+                    task, 0, MAX_TOOL_ROUNDS, "", {}, history, phase="start"
+                )
             )
 
         while tool_round < MAX_TOOL_ROUNDS:
@@ -122,33 +185,39 @@ class HermesHandler:
                 logger.exception("Hermes model call error: %s", e)
                 return f"❌ Hermes gagal memanggil model: {e}"
 
-            resp_type = result.get("type")
-            text = result.get("text", "")
+            text       = result.get("text", "")
             tool_calls = result.get("tool_calls", [])
 
-            # Tambahkan respons model ke messages
             if text:
                 final_text = text
 
             if not tool_calls:
-                # Model selesai — tidak ada tool lagi
                 break
 
             # ── Eksekusi semua tool calls ────────────────────────────────────
-            tool_summary_parts = []
             for tc in tool_calls:
                 name = tc["name"]
-                inp = tc["input"]
+                inp  = tc["input"]
 
                 if on_progress:
                     await on_progress(
-                        f"🔮 *Hermes Agent*\n\n"
-                        f"🔧 *Round {tool_round}* — Menjalankan tool:\n"
-                        f"`{name}({json.dumps(inp, ensure_ascii=False)[:80]})`"
+                        _render_hermes_progress(
+                            task, tool_round, MAX_TOOL_ROUNDS,
+                            name, inp, history, phase="tool"
+                        )
                     )
 
-                tool_result = await self.executor.execute(name, inp, router=router)
-                tool_summary_parts.append(f"**{name}**: {tool_result[:200]}")
+                # Buat on_progress khusus untuk tool ini (misal Vision PDF)
+                async def _tool_progress(msg: str, _op=on_progress):
+                    if _op:
+                        await _op(msg)
+
+                tool_result = await self.executor.execute(
+                    name, inp, router=router, on_progress=_tool_progress
+                )
+
+                history.append((tool_round, name, "✅"))
+                _ = tool_result  # dipakai di bawah
 
                 # Masukkan hasil tool ke messages (format sesuai provider)
                 if provider == "anthropic":
@@ -197,8 +266,10 @@ class HermesHandler:
 
         if on_progress:
             await on_progress(
-                f"🔮 *Hermes Agent*\n\n"
-                f"✅ Selesai ({tool_round} round) — Menyusun respons..."
+                _render_hermes_progress(
+                    task, tool_round, MAX_TOOL_ROUNDS,
+                    "", {}, history, phase="finish"
+                )
             )
 
         return final_text or "✅ Tugas selesai."
