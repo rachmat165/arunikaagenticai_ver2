@@ -428,10 +428,184 @@ Ketik pertanyaan bebas kapan saja! 🤖"""
         )
         await query.edit_message_text(f"✅ Model diatur ke: {display}")
 
+    # ── Context-aware helper ─────────────────────────────────────────────
+    async def _get_research_context(
+        self, user_id: int, query: str, limit_chars: int = 3000, max_chunks: int = 2,
+    ) -> str:
+        """Cari pesan AI sebelumnya yang relevan dengan query.
+
+        Dipakai oleh surat / proposal / presentasi agar merujuk hasil riset
+        yang sudah dibuat sebelumnya, bukan generate dari nol.
+        """
+        import re as _re_kw
+        try:
+            ctx_msgs = await self.agent.context_manager.get_context(user_id, limit=20)
+        except Exception as _e:
+            logger.warning("Gagal ambil context riset: %s", _e)
+            return ""
+
+        STOPWORDS = {
+            "surat", "untuk", "utk", "buat", "buatkan", "bikin", "kepada",
+            "dari", "yth", "yang", "dengan", "tentang", "perihal", "draft",
+            "penawaran", "permohonan", "undangan", "kerjasama", "kolaborasi",
+            "proposal", "presentasi", "presentation", "slide", "deck",
+            "bahan", "materi", "outline", "tolong", "minta", "saya", "kami",
+            "anda", "akan", "harus", "wajib", "dan", "atau", "tapi",
+            "ke", "di", "pada", "ini", "itu", "dia", "pdf", "doc", "docx",
+            "the", "for", "and", "with", "about",
+        }
+        keywords = [
+            w.lower()
+            for w in _re_kw.findall(r"[A-Za-z][A-Za-z0-9'\-]{2,}", query or "")
+            if w.lower() not in STOPWORDS
+        ]
+
+        relevant: list[str] = []
+        for m in ctx_msgs:
+            if m.get("role") != "assistant":
+                continue
+            body = str(m.get("content", ""))
+            if len(body) < 200:
+                continue
+            low = body.lower()
+            if not keywords or any(k in low for k in keywords):
+                relevant.append(body)
+
+        relevant = relevant[-max_chunks:]
+        if not relevant:
+            return ""
+        return "\n\n──────\n\n".join(relevant)[:limit_chars]
+
+    # ── Telegram formatting helpers ──────────────────────────────────────
+    @staticmethod
+    def _md_table_to_telegram(table_lines: list[str]) -> str:
+        """Convert markdown pipe table into mobile-friendly Telegram format.
+
+        Narrow tables (≤2 cols, total width ≤40) → monospace code block.
+        Wider tables → vertical card layout per row (better on mobile).
+        """
+        import re as _re
+        rows: list[list[str]] = []
+        for ln in table_lines:
+            if _re.match(r"^\s*\|?[\s\-:|]+\|[\s\-:|]+\s*$", ln):
+                continue  # separator row
+            if "|" not in ln:
+                continue
+            cells = [c.strip() for c in ln.strip().strip("|").split("|")]
+            rows.append(cells)
+        if len(rows) < 2:
+            return "\n".join(table_lines)
+
+        header, body = rows[0], rows[1:]
+        ncols = max(len(r) for r in rows)
+        header = header + [""] * (ncols - len(header))
+        body = [r + [""] * (ncols - len(r)) for r in body]
+        widths = [max(len(r[i]) for r in [header] + body) for i in range(ncols)]
+        total_width = sum(widths) + 3 * (ncols - 1)
+
+        if ncols <= 2 and total_width <= 40:
+            out = ["```"]
+            out.append(" │ ".join(header[i].ljust(widths[i]) for i in range(ncols)))
+            out.append("─┼─".join("─" * widths[i] for i in range(ncols)))
+            for r in body:
+                out.append(" │ ".join(r[i].ljust(widths[i]) for i in range(ncols)))
+            out.append("```")
+            return "\n".join(out)
+
+        # Vertical card layout (mobile-friendly)
+        out = []
+        for r in body:
+            out.append("──────────────────────")
+            for i, cell in enumerate(r):
+                label = header[i] if i < len(header) and header[i] else f"Kolom {i+1}"
+                out.append(f"• *{label}:* {cell}")
+        out.append("──────────────────────")
+        return "\n".join(out)
+
+    def _sanitize_for_telegram(self, text: str) -> str:
+        """Bersihkan output AI agar render rapi & profesional di Telegram.
+
+        - `## heading` → `*HEADING*`
+        - `**bold**` → `*bold*`
+        - `---` / `===` → unicode divider
+        - `| col | col |` markdown tables → code block atau vertical cards
+        - `> blockquote` → `┃ prefix`
+        Konten di dalam ``` ``` code block tidak diubah.
+        """
+        import re as _re
+        if not text:
+            return text
+
+        # Lindungi code block triple-backtick
+        code_blocks: list[str] = []
+        def _stash(m):
+            code_blocks.append(m.group(0))
+            return f"\x00CB{len(code_blocks)-1}\x00"
+        text = _re.sub(r"```[\s\S]*?```", _stash, text)
+
+        # 1) Pipe tables → code block / vertical
+        lines = text.split("\n")
+        out_lines: list[str] = []
+        i = 0
+        while i < len(lines):
+            line = lines[i]
+            is_table_header = (
+                line.count("|") >= 2
+                and i + 1 < len(lines)
+                and _re.match(r"^\s*\|?[\s\-:|]+\|[\s\-:|]+\s*$", lines[i+1])
+            )
+            if is_table_header:
+                tbl = [line]
+                j = i + 1
+                while j < len(lines) and "|" in lines[j] and lines[j].strip():
+                    tbl.append(lines[j])
+                    j += 1
+                out_lines.append(self._md_table_to_telegram(tbl))
+                i = j
+            else:
+                out_lines.append(line)
+                i += 1
+        text = "\n".join(out_lines)
+
+        # 2) Headings: ##/###/etc → *UPPER*, # → *Title*
+        text = _re.sub(
+            r"^#{2,6}\s+(.+?)\s*#*\s*$",
+            lambda m: f"*{m.group(1).upper()}*",
+            text, flags=_re.MULTILINE,
+        )
+        text = _re.sub(
+            r"^#\s+(.+?)\s*#*\s*$",
+            lambda m: f"*{m.group(1)}*",
+            text, flags=_re.MULTILINE,
+        )
+
+        # 3) Divider --- / === → unicode line
+        text = _re.sub(r"^\s*[-=*]{3,}\s*$", "──────────────────────", text, flags=_re.MULTILINE)
+
+        # 4) Double-asterisk bold → single-asterisk
+        text = _re.sub(r"\*\*([^\n*]+?)\*\*", r"*\1*", text)
+
+        # 5) Blockquote
+        text = _re.sub(r"^>\s+(.+)$", r"┃ \1", text, flags=_re.MULTILINE)
+
+        # Restore code blocks
+        for idx, cb in enumerate(code_blocks):
+            text = text.replace(f"\x00CB{idx}\x00", cb)
+        return text
+
     async def _send_long(self, update: Update, text: str):
-        """Send long text split into Telegram-safe chunks."""
-        for i in range(0, len(text), 4096):
-            await update.message.reply_text(text[i:i+4096])
+        """Send long text split into Telegram-safe chunks, with sanitization."""
+        clean = self._sanitize_for_telegram(text)
+        for i in range(0, len(clean), 4096):
+            chunk = clean[i:i+4096]
+            try:
+                await update.message.reply_text(chunk, parse_mode="Markdown")
+            except Exception:
+                # Fallback: kirim plain bila Markdown parser Telegram nolak chunk
+                try:
+                    await update.message.reply_text(chunk)
+                except Exception as e:
+                    logger.warning("Gagal kirim chunk Telegram: %s", e)
 
     async def _ensure_model_router(self, user_id: int):
         async with aiosqlite.connect(self.db_path) as db:
@@ -560,7 +734,12 @@ Ketik pertanyaan bebas kapan saja! 🤖"""
                     except Exception:
                         pass
 
-                result = await self.rnd_module.buat_proposal(partner, user_message, router, on_progress=progress_proposal)
+                prior_research = await self._get_research_context(user_id, partner)
+                result = await self.rnd_module.buat_proposal(
+                    partner, user_message, router,
+                    on_progress=progress_proposal,
+                    prior_research=prior_research,
+                )
 
                 # Show final result dalam progress message
                 await msg.edit_text(
@@ -728,12 +907,86 @@ Ketik pertanyaan bebas kapan saja! 🤖"""
 
         # ── Normal chat ────────────────────────────────────────────────────
         await update.message.chat.send_action("typing")
+        progress_msg = None
+        try:
+            progress_msg = await update.message.reply_text(
+                "🤔 *Dewi sedang berpikir...*\n\n"
+                f"{self._render_progress_bar(1, 10, 'Memproses pertanyaan')}\n\n"
+                "_Mohon tunggu sebentar..._",
+                parse_mode="Markdown",
+            )
+        except Exception:
+            progress_msg = None
+
+        ticker_done = asyncio.Event()
+        STEP_LABELS = [
+            "Memproses pertanyaan",
+            "Menelusuri konteks",
+            "Memanggil model AI",
+            "Merangkai jawaban",
+            "Memformat respons",
+            "Menyelesaikan output",
+        ]
+
+        async def _tick():
+            step = 1
+            label_idx = 0
+            while not ticker_done.is_set():
+                try:
+                    await asyncio.wait_for(ticker_done.wait(), timeout=2.0)
+                    return
+                except asyncio.TimeoutError:
+                    pass
+                step = min(step + 1, 9)
+                label_idx = (label_idx + 1) % len(STEP_LABELS)
+                if progress_msg is None:
+                    continue
+                try:
+                    await progress_msg.edit_text(
+                        "🤔 *Dewi sedang berpikir...*\n\n"
+                        f"{self._render_progress_bar(step, 10, STEP_LABELS[label_idx])}\n\n"
+                        "_Mohon tunggu sebentar..._",
+                        parse_mode="Markdown",
+                    )
+                except Exception:
+                    pass
+
+        ticker_task = asyncio.create_task(_tick())
         try:
             response = await self.agent.chat(user_id, user_message)
-            await self._send_long(update, response)
         except Exception as e:
             logger.error(f"Error: {e}")
-            await update.message.reply_text(f"❌ Error: {str(e)}")
+            ticker_done.set()
+            try:
+                await ticker_task
+            except Exception:
+                pass
+            if progress_msg is not None:
+                try:
+                    await progress_msg.edit_text(f"❌ Error: {str(e)}")
+                except Exception:
+                    await update.message.reply_text(f"❌ Error: {str(e)}")
+            else:
+                await update.message.reply_text(f"❌ Error: {str(e)}")
+            return
+        finally:
+            ticker_done.set()
+            try:
+                await ticker_task
+            except Exception:
+                pass
+
+        if progress_msg is not None:
+            try:
+                await progress_msg.edit_text(
+                    "🤔 *Dewi sedang berpikir...*\n\n"
+                    f"{self._render_progress_bar(10, 10, 'Complete ✅')}\n\n"
+                    "📨 Jawaban di bawah ini:",
+                    parse_mode="Markdown",
+                )
+            except Exception:
+                pass
+        await self._send_long(update, response)
 
     async def sekretaris(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
@@ -1321,9 +1574,64 @@ metadata:
                 await msg.reply_text("❌ Konten tidak boleh kosong.")
                 return
 
-            status = await msg.reply_text(
-                f"⏳ Membuat PDF: *{title}*...", parse_mode="Markdown"
-            )
+            # Jika user kirim brief pendek (bukan konten lengkap),
+            # generate konten dengan AI yang merujuk hasil riset sebelumnya.
+            user_id = update.effective_user.id if update.effective_user else 0
+            if len(content) < 400:
+                status = await msg.reply_text(
+                    f"⏳ Membuat PDF: *{title}*\n"
+                    f"{self._render_progress_bar(1, 4, 'Membaca riset sebelumnya')}",
+                    parse_mode="Markdown",
+                )
+                try:
+                    riset_context = await self._get_research_context(
+                        user_id, f"{title} {content}"
+                    )
+                    if riset_context:
+                        await status.edit_text(
+                            f"⏳ Membuat PDF: *{title}*\n"
+                            f"{self._render_progress_bar(2, 4, 'Menyusun konten dengan AI')}",
+                            parse_mode="Markdown",
+                        )
+                        router = await self._ensure_model_router(user_id)
+                        ai_prompt = f"""Buatkan dokumen profesional berformat Markdown.
+
+JUDUL: {title}
+BRIEF DARI USER: {content}
+
+RISET / KONTEKS SEBELUMNYA (WAJIB dijadikan sumber utama — sebut data konkret,
+angka, profil, fakta nyata yang relevan):
+{riset_context}
+
+INSTRUKSI:
+1. Tulis dokumen substansial (minimum 800 kata) yang merujuk DATA NYATA dari riset.
+2. Struktur: ringkasan eksekutif → latar belakang → analisis → kesimpulan → rekomendasi.
+3. Pakai *bold* tunggal (bukan **double**), bullet •, dan section heading.
+4. JANGAN pakai placeholder generik — semua isi harus konkret dari riset/brief.
+
+Tulis langsung dokumennya tanpa prefix penjelasan."""
+                        try:
+                            generated, _ = await router.call(
+                                messages=[{"role": "user", "content": ai_prompt}],
+                                temperature=0.4,
+                                max_tokens=4000,
+                            )
+                            if generated and len(generated) > 400:
+                                content = generated
+                        except Exception as _e:
+                            logger.warning("Gagal generate konten PDF dari AI: %s", _e)
+                    await status.edit_text(
+                        f"⏳ Membuat PDF: *{title}*\n"
+                        f"{self._render_progress_bar(3, 4, 'Menulis PDF')}",
+                        parse_mode="Markdown",
+                    )
+                except Exception as _e:
+                    logger.warning("Gagal enrich konten PDF: %s", _e)
+            else:
+                status = await msg.reply_text(
+                    f"⏳ Membuat PDF: *{title}*...", parse_mode="Markdown"
+                )
+
             try:
                 pdf_path = await generate_document_pdf_async(title, content)
                 await status.edit_text(f"📄 *{title}* — PDF selesai ✅", parse_mode="Markdown")
@@ -2275,27 +2583,57 @@ SCRIPT:
             user_id = update.effective_user.id if update.effective_user else 0
             await msg.chat.send_action("typing")
             status = await msg.reply_text(
-                "🤖 AI sedang menyusun surat...\n⏱ Estimasi 15-20 detik"
+                "🤖 AI sedang menyusun surat...\n"
+                f"{self._render_progress_bar(1, 4, 'Membaca riset sebelumnya')}\n"
+                "⏱ Estimasi 15-20 detik",
+                parse_mode="Markdown",
             )
             router = await self._ensure_model_router(user_id)
+
+            riset_context = await self._get_research_context(user_id, user_message)
+
+            await status.edit_text(
+                "🤖 AI sedang menyusun surat...\n"
+                f"{self._render_progress_bar(2, 4, 'Menyusun draft surat')}\n"
+                "⏱ Estimasi 15-20 detik",
+                parse_mode="Markdown",
+            )
+
+            riset_block = (
+                f"\n\nRISET / KONTEKS SEBELUMNYA TENTANG PENERIMA "
+                f"(WAJIB dijadikan dasar isi surat — sebut data konkret, "
+                f"angka, profil, fakta yang relevan):\n{riset_context}\n"
+            ) if riset_context else ""
 
             ai_prompt = f"""Kamu adalah Corporate Secretary PT. Arunika Teknologi Global (ATG).
 Buat surat resmi profesional dalam Bahasa Indonesia berdasarkan brief berikut.
 
-Brief dari pengguna: {user_message}
+Brief dari pengguna: {user_message}{riset_block}
 
-INSTRUKSI PENTING - balas PERSIS dalam format berikut, tidak lebih tidak kurang:
+INSTRUKSI PENTING:
+1. WAJIB pakai fakta dari RISET di atas (jika ada) — sebut nama institusi resmi,
+   data konkret, profil, kebutuhan/pain-point yang sudah diidentifikasi.
+2. Jangan pakai placeholder seperti "[Nama Yayasan]" / "[Isi disini]" —
+   isi dengan data nyata dari riset atau brief.
+3. Isi surat minimum 3 paragraf substansial (bukan template kosong).
 
-TUJUAN_NAMA: [nama lengkap penerima, ambil dari brief]
-TUJUAN_JABATAN: [jabatan penerima, contoh: Direktur Utama]
-TUJUAN_INSTITUSI: [nama perusahaan/institusi penerima]
-TUJUAN_KOTA: [kota penerima, default: Tempat]
+FORMAT BALASAN - WAJIB PERSIS seperti ini, tidak lebih tidak kurang:
+
+TUJUAN_NAMA: [nama lengkap penerima — ambil dari riset/brief, BUKAN placeholder]
+TUJUAN_JABATAN: [jabatan penerima, contoh: Ketua Yayasan / Direktur Utama]
+TUJUAN_INSTITUSI: [nama resmi institusi penerima — ambil dari riset]
+TUJUAN_KOTA: [kota penerima — ambil dari riset, default: Tempat]
 PERIHAL: [judul/perihal surat, singkat dan jelas]
 LAMPIRAN: [-]
 PENANDATANGAN_NAMA: [Ir. Rachmat Ari Kusumanto]
 PENANDATANGAN_JABATAN: [Direktur]
 ISI_SURAT:
-[Tulis isi surat dalam 3 paragraf profesional. Jangan tulis salam (Assalamualaikum dll), bismillah, atau tanda tangan — sudah ada di template. Langsung tulis paragraf isi saja.]
+[Tulis isi surat 3-4 paragraf profesional yang merujuk DATA NYATA dari riset.
+Paragraf 1: pembuka + apresiasi/pengantar (sebut fakta institusi penerima).
+Paragraf 2: maksud surat + solusi/penawaran ATG yang sesuai pain-point penerima.
+Paragraf 3: detail benefit + ajakan tindak lanjut.
+Jangan tulis salam (Assalamualaikum dll), bismillah, atau tanda tangan —
+sudah ada di template. Langsung tulis paragraf isi saja.]
 SELESAI"""
 
             try:
@@ -2304,6 +2642,15 @@ SELESAI"""
                     temperature=0.3,
                     max_tokens=2000,
                 )
+                try:
+                    await status.edit_text(
+                        "🤖 AI sedang menyusun surat...\n"
+                        f"{self._render_progress_bar(3, 4, 'Parsing & validasi')}\n"
+                        "⏱ Hampir selesai...",
+                        parse_mode="Markdown",
+                    )
+                except Exception:
+                    pass
 
                 # ── Parsing robust: coba beberapa variasi key ─────────────
                 def _extract(text: str, *keys) -> str:
@@ -2373,7 +2720,12 @@ SELESAI"""
                     "penandatangan_jabatan": ttd_jab,
                     "isi":                   isi,
                 })
-                await status.edit_text("📄 Draft surat selesai ✅\nMenampilkan preview...")
+                await status.edit_text(
+                    "📄 Draft surat selesai ✅\n"
+                    f"{self._render_progress_bar(4, 4, 'Complete')}\n"
+                    "Menampilkan preview...",
+                    parse_mode="Markdown",
+                )
                 await self._show_surat_preview(update, context, draft)
 
             except Exception as e:
@@ -2480,24 +2832,60 @@ SELESAI"""
             ud["presentasi_state"] = None
             ud["presentasi_draft"] = {"topik": user_message}
 
-            status = await msg.reply_text("⏳ Membuat outline presentasi dengan Claude Skills...")
+            status = await msg.reply_text(
+                "⏳ Membuat outline presentasi...\n"
+                f"{self._render_progress_bar(1, 3, 'Membaca riset sebelumnya')}",
+                parse_mode="Markdown",
+            )
 
             try:
-                # Gunakan ATGAgent dengan system prompt yang include Claude Skills
-                # untuk membuat outline presentasi profesional
+                riset_context = await self._get_research_context(user_id, user_message)
+
+                try:
+                    await status.edit_text(
+                        "⏳ Membuat outline presentasi...\n"
+                        f"{self._render_progress_bar(2, 3, 'Menyusun outline dengan AI')}",
+                        parse_mode="Markdown",
+                    )
+                except Exception:
+                    pass
+
+                riset_block = (
+                    f"\n\nRISET / KONTEKS SEBELUMNYA (WAJIB dijadikan dasar slide — "
+                    f"sebut data konkret, angka, profil, fakta yang relevan):\n"
+                    f"{riset_context}\n"
+                ) if riset_context else ""
+
                 presentation_prompt = f"""Buatkan outline presentasi profesional (PowerPoint/slide):
 
-📊 *Topik:* {user_message}
+Topik: {user_message}{riset_block}
 
-Berikan struktur slide yang jelas dengan:
-1. Slide title dan deskripsi singkat setiap slide
-2. Key points untuk setiap bagian
-3. Rekomendasi visual/content untuk PowerPoint
-4. Tips desain dan layout PowerPoint
+INSTRUKSI:
+1. WAJIB pakai fakta dari RISET di atas (jika ada) — sebut data konkret,
+   angka, profil, pain-point, peluang yang sudah teridentifikasi.
+2. Jangan pakai placeholder generik — isi setiap slide dengan substansi nyata.
 
-Format output sebagai markdown yang rapi dan actionable untuk presentasi profesional."""
+STRUKTUR SLIDE:
+- Slide 1: Cover (judul + subjudul + tanggal)
+- Slide 2: Executive Summary (3-4 bullet inti)
+- Slide 3: Latar Belakang / Konteks (data dari riset)
+- Slide 4: Pain Point / Masalah (spesifik, terukur)
+- Slide 5: Solusi yang Ditawarkan
+- Slide 6: Benefit & Value (kuantitatif jika bisa)
+- Slide 7: Timeline / Roadmap
+- Slide 8: Investasi / Cost (jika relevan)
+- Slide 9: Next Steps / Call-to-Action
+- Slide 10: Penutup / Kontak
 
-                # Chat dengan agent — Claude Skills akan diinject otomatis
+Untuk SETIAP slide tulis:
+*Slide N — [Judul]*
+• Bullet point 1 (substansi konkret)
+• Bullet point 2
+_Catatan presenter: ..._
+
+Format output dengan asterisk tunggal untuk bold dan bullet •.
+JANGAN pakai `## heading`, `**bold**`, atau `| pipe table |`."""
+
                 result = await self.agent.chat(
                     user_id=user_id,
                     user_message=presentation_prompt,
@@ -2745,7 +3133,7 @@ INSTRUKSI:
                             caption=(
                                 f"📄 *Surat Resmi ATG*\n"
                                 f"📌 Perihal: _{draft.get('perihal', '')}_\n\n"
-                                f"Gunakan /sek jika ingin kirim via email.",
+                                f"Gunakan /sek jika ingin kirim via email."
                             ),
                             parse_mode="Markdown",
                         )

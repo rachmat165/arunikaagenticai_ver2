@@ -254,10 +254,24 @@ class RndHandler:
         prompt = SWOT_PROMPT.format(subject=subject, web_data=web_data)
         return await self._call_claude(prompt, model_router)
 
-    async def buat_proposal(self, partner: str, project_type: str, model_router: ModelRouter, on_progress=None) -> str:
+    async def buat_proposal(
+        self,
+        partner: str,
+        project_type: str,
+        model_router: ModelRouter,
+        on_progress=None,
+        prior_research: str = "",
+    ) -> str:
         from datetime import date
         query = f"{partner} perusahaan yayasan profil bisnis Indonesia"
         web_data = await self._web_search(query, limit=3, on_progress=on_progress)
+        if prior_research:
+            web_data = (
+                "── RISET SEBELUMNYA TENTANG MITRA (WAJIB dipakai sebagai sumber utama) ──\n"
+                f"{prior_research}\n\n"
+                "── HASIL WEB SEARCH TAMBAHAN ──\n"
+                f"{web_data}"
+            )
         prompt = PROPOSAL_PROMPT.format(
             partner=partner,
             project_type=project_type,

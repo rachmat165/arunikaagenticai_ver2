@@ -163,43 +163,70 @@ PANDUAN RESPONS
 - Jika ada pertanyaan model/identitas → jawab berdasarkan info di atas
 
 ══════════════════════════════════════════════
-FORMAT TELEGRAM — WAJIB DIIKUTI PERMANEN
+FORMAT TELEGRAM — WAJIB & MUTLAK (PERMANEN)
 ══════════════════════════════════════════════
 
-TELEGRAM TIDAK SUPPORT: ## heading, | table |, ---, > blockquote
-GUNAKAN FORMAT BERIKUT:
+⚠️ INI BUKAN GITHUB / NOTION / OBSIDIAN.
+   Ini Telegram mobile dengan layar SEMPIT.
+   Tabel `| col | col |` AKAN BERANTAKAN WRAP ke banyak baris.
+   Heading `## judul` TIDAK render — muncul mentah sebagai `##`.
+   Bold `**teks**` TIDAK render — muncul mentah sebagai `**teks**`.
 
-✅ HEADING → Gunakan *JUDUL BESAR* atau *JUDUL SEDANG*
-   Contoh: *📊 DATA OPERASIONAL*
+🚫 DILARANG TOTAL (jangan pernah pakai):
+   × ## Heading      → muncul mentah, jelek
+   × ### Subheading  → muncul mentah, jelek
+   × | col1 | col2 | → wrap berantakan di mobile
+   × |------|------| → muncul sebagai baris dash aneh
+   × --- / === / *** → tidak render sebagai divider
+   × **bold**        → muncul mentah `**bold**`
+   × __underline__   → tidak ada underline di Telegram
+   × > quote         → tidak render sebagai blockquote
+   × HTML tags       → <b>, <i>, <table> dll
 
-✅ DIVIDER → ────────────────────── (minimal 10 dash)
-   BUKAN: ---  atau ===
+✅ FORMAT YANG WAJIB DIPAKAI:
 
-✅ TABLE → WAJIB pakai code block:
-   ```
-   Kriteria          │ Nilai
-   ──────────────────┼──────────
-   Pengalaman        │ 14 tahun
-   Jumlah Sekolah    │ 16 unit
-   Total Siswa       │ 4.500+
-   ```
+  HEADING       → *JUDUL SECTION*  (asterisk tunggal, huruf besar)
+                   Contoh: *📊 DATA OPERASIONAL*
 
-✅ LIST → Gunakan bullet • atau nomorasi
-   • Item satu
-   • Item dua
-   BUKAN: - item (karena bisa diparse sebagai markdown)
+  SUB-HEADING   → *Sub Judul*  (asterisk tunggal, Title Case)
 
-✅ BOLD → *teks tebal*  BUKAN: **teks**
-✅ ITALIC → _teks miring_  BUKAN: *teks*
-✅ CODE → `kode inline`
+  DIVIDER       → ──────────────────────  (garis unicode panjang)
 
-❌ JANGAN PERNAH GUNAKAN:
-   × ## Heading  (tidak render di Telegram)
-   × | col | col | (tabel pipe tidak render)
-   × --- atau === (tidak render sebagai divider)
-   × > blockquote
-   × **double asterisk** (gunakan *single*)
-   × Emoji berlebihan (max 1-2 per section){_load_claude_skills_summary() if provider == "anthropic" else ""}"""
+  BOLD          → *teks tebal*       (BUKAN **teks**)
+  ITALIC        → _teks miring_      (BUKAN *teks*)
+  CODE INLINE   → `kode`
+
+  BULLET LIST   → Pakai • atau ▪ atau ✓
+                   • Item satu
+                   • Item dua
+                   ▪ Sub item
+
+  NUMBERED      → 1. Item satu
+                   2. Item dua
+
+  TABEL (PILIH SALAH SATU — JANGAN PIPE!):
+
+  ── Cara 1: Tabel vertikal (RECOMMENDED untuk mobile) ──
+  *📊 Data Yayasan A:*
+  • Pengalaman: 14 tahun
+  • Jumlah sekolah: 16 unit
+  • Total siswa: 4.500+
+
+  *📊 Data Yayasan B:*
+  • Pengalaman: 8 tahun
+  • Jumlah sekolah: 5 unit
+
+  ── Cara 2: Code block monospace (HANYA jika ≤2 kolom & ≤30 char) ──
+  ```
+  Kriteria      │ Nilai
+  ──────────────┼─────────
+  Pengalaman    │ 14 thn
+  Jumlah unit   │ 16
+  ```
+
+INGAT: Jika ragu, PAKAI BULLET VERTIKAL.
+       Tabel pipe `| ... |` SELALU SALAH di Telegram mobile.
+       Bold `**...**` SELALU SALAH — pakai `*...*` tunggal.{_load_claude_skills_summary() if provider == "anthropic" else ""}"""
 
 
 class ATGAgent:
