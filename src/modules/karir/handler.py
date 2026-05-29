@@ -286,7 +286,7 @@ class KarirHandler:
         prompt = CV_PROMPT.format(user_info=user_info, target_info=target_info)
         response, _ = await router.call(
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.4,
+            temperature=0.3,
             max_tokens=4096,
         )
         return response
@@ -312,7 +312,7 @@ class KarirHandler:
         prompt = RISET_PERUSAHAAN_PROMPT.format(company=company, web_context=web_context)
         response, _ = await router.call(
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.4,
+            temperature=0.3,
             max_tokens=4096,
         )
         return response
@@ -325,7 +325,7 @@ class KarirHandler:
         prompt = EVOLUSI_PROMPT.format(conversation_samples=conversation_samples)
         response, _ = await router.call(
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.5,
+            temperature=0.3,
             max_tokens=4096,
         )
         return response

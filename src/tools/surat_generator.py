@@ -343,6 +343,24 @@ class SuratGenerator:
 
     # ── Isi surat ─────────────────────────────────────────────────────────────
     def _build_body(self, st: dict, isi: str) -> list:
+        bullet_style = ParagraphStyle(
+            "body_bullet",
+            parent=st["body"],
+            leftIndent=14,
+            bulletIndent=0,
+            firstLineIndent=0,
+            spaceAfter=2,
+            alignment=TA_LEFT,
+        )
+
+        bullet_re = re.compile(r"^\s*(?:[-•*]|\d+[\.\)])\s+(.+)$")
+
+        def _markup(s: str) -> str:
+            # Konversi **bold** dan *bold* (fallback jika AI tidak pakai <b>) → <b>...</b>
+            s = re.sub(r"\*\*([^*\n]+?)\*\*", r"<b>\1</b>", s)
+            s = re.sub(r"(?<!\*)\*([^*\n]+?)\*(?!\*)", r"<b>\1</b>", s)
+            return s
+
         rows = [
             Paragraph(
                 "Assalamu'alaikum Warahmatullahi Wabarakatuh,",
@@ -351,12 +369,26 @@ class SuratGenerator:
             Spacer(1, 3 * mm),
         ]
 
-        # Split paragraf dan render
         for para in isi.strip().split("\n\n"):
             para = para.strip()
             if not para:
                 continue
-            rows.append(Paragraph(para.replace("\n", " "), st["body"]))
+
+            lines = [ln for ln in para.split("\n") if ln.strip()]
+            # Render bullet list jika ada >=2 baris yg match bullet pattern
+            bullet_count = sum(1 for ln in lines if bullet_re.match(ln))
+
+            if bullet_count >= 2:
+                # Campuran intro line + bullet — pisah jadi paragraf individual
+                for ln in lines:
+                    m = bullet_re.match(ln)
+                    if m:
+                        rows.append(Paragraph(f"• {_markup(m.group(1))}", bullet_style))
+                    else:
+                        rows.append(Paragraph(_markup(ln.strip()), st["body"]))
+                rows.append(Spacer(1, 2 * mm))
+            else:
+                rows.append(Paragraph(_markup(para.replace("\n", " ")), st["body"]))
 
         rows += [
             Spacer(1, 3 * mm),

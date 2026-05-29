@@ -1613,7 +1613,7 @@ Tulis langsung dokumennya tanpa prefix penjelasan."""
                         try:
                             generated, _ = await router.call(
                                 messages=[{"role": "user", "content": ai_prompt}],
-                                temperature=0.4,
+                                temperature=0.3,
                                 max_tokens=4000,
                             )
                             if generated and len(generated) > 400:
@@ -2447,7 +2447,7 @@ SCRIPT:
         try:
             response, _ = await router.call(
                 messages=[{"role": "user", "content": prompt}],
-                temperature=0.2,
+                temperature=0.3,
                 max_tokens=4000,
             )
 
@@ -2628,12 +2628,45 @@ LAMPIRAN: [-]
 PENANDATANGAN_NAMA: [Ir. Rachmat Ari Kusumanto]
 PENANDATANGAN_JABATAN: [Direktur]
 ISI_SURAT:
-[Tulis isi surat 3-4 paragraf profesional yang merujuk DATA NYATA dari riset.
-Paragraf 1: pembuka + apresiasi/pengantar (sebut fakta institusi penerima).
-Paragraf 2: maksud surat + solusi/penawaran ATG yang sesuai pain-point penerima.
-Paragraf 3: detail benefit + ajakan tindak lanjut.
-Jangan tulis salam (Assalamualaikum dll), bismillah, atau tanda tangan —
-sudah ada di template. Langsung tulis paragraf isi saja.]
+[Tulis isi surat profesional yang merujuk DATA NYATA dari riset.
+
+GAYA PENULISAN — WAJIB:
+- Setiap paragraf MAKSIMAL 3 kalimat. Singkat, padat, langsung ke pokok.
+- Persuasif tapi tidak bertele-tele — hindari kalimat panjang berbelit.
+- Tebalkan kata kunci penting (nama institusi penerima, nama produk/solusi ATG,
+  angka pencapaian, manfaat utama) dengan tag <b>kata</b>.
+  JANGAN pakai * atau ** — akan muncul mentah di PDF.
+- Jika menyebut 3+ manfaat/poin, tulis sebagai BULLET LIST dengan format
+  "- " di awal baris (satu bullet per baris). Antar bullet pakai newline,
+  bukan koma berderet.
+
+STRUKTUR (4 paragraf, ringkas):
+Paragraf 1 — Pembuka:
+   Apresiasi singkat. Sebut <b>nama resmi institusi penerima</b> + 1 fakta
+   konkret (tahun berdiri / skala jaringan / pencapaian). Maks 3 kalimat.
+
+Paragraf 2 — Maksud Surat:
+   Langsung ke penawaran. Sebut <b>nama solusi ATG</b> + masalah yang
+   dipecahkan. Maks 3 kalimat.
+
+Paragraf 3 — Manfaat (BULLET LIST):
+   Buka dengan 1 kalimat pengantar singkat, lalu tulis 3-5 bullet manfaat
+   konkret. Setiap bullet 1 baris, kata kunci dalam <b>...</b>.
+   Contoh format:
+   Melalui solusi ini, <b>nama penerima</b> akan memperoleh:
+   - <b>Manfaat 1</b>: penjelasan singkat 1 kalimat.
+   - <b>Manfaat 2</b>: penjelasan singkat 1 kalimat.
+   - <b>Manfaat 3</b>: penjelasan singkat 1 kalimat.
+
+Paragraf 4 — Tindak Lanjut:
+   Ajakan meeting/presentasi + kontak singkat. Maks 2-3 kalimat.
+
+LARANGAN MUTLAK:
+- Jangan tulis salam (Assalamualaikum), bismillah, atau tanda tangan —
+  sudah ada di template.
+- Jangan pakai * atau ** untuk bold — pakai <b>...</b>.
+- Jangan tulis paragraf > 3 kalimat.
+- Jangan placeholder seperti "[Nama Yayasan]" — pakai data nyata.]
 SELESAI"""
 
             try:
@@ -3270,7 +3303,7 @@ INSTRUKSI:
             try:
                 response, _ = await router.call(
                     messages=[{"role": "user", "content": ai_prompt}],
-                    temperature=0.4,
+                    temperature=0.3,
                     max_tokens=2000,
                 )
                 to_val, subject_val = "", ""
@@ -3895,7 +3928,7 @@ AKTA_NOTARIS: [nomor akta, notaris, tanggal]
             try:
                 summary, _ = await router.call(
                     messages=[{"role": "user", "content": extract_prompt}],
-                    temperature=0.2,
+                    temperature=0.3,
                     max_tokens=2000,
                 )
 
@@ -3980,7 +4013,7 @@ AKTA_NOTARIS: [nomor akta, notaris, tanggal]
             router = await self._ensure_model_router(user_id)
             response, _ = await router.call(
                 messages=[{"role": "user", "content": ai_prompt}],
-                temperature=0.5,
+                temperature=0.3,
                 max_tokens=4096,
             )
             await status.edit_text(
@@ -4074,7 +4107,7 @@ AKTA_NOTARIS: [nomor akta, notaris, tanggal]
             router = await self._ensure_model_router(user_id)
             response, _ = await router.call(
                 messages=[vision_message],
-                temperature=0.5,
+                temperature=0.3,
                 max_tokens=4096,
             )
             await status.edit_text(

@@ -54,6 +54,9 @@ session.db-shm
 /data/*
 !/data/.gitkeep
 
+# Generated runtime artifacts (PDF surat, output dokumen, dll)
+output/
+
 # Logs
 *.log
 logs/

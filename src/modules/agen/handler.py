@@ -84,7 +84,7 @@ class AgenHandler:
 
         plan_resp, _ = await router.call(
             messages=[{"role": "user", "content": PLAN_PROMPT.format(task=task)}],
-            temperature=0.2,
+            temperature=0.3,
             max_tokens=1024,
         )
 
@@ -104,7 +104,7 @@ class AgenHandler:
                 await on_progress("⚡ Mode langsung (tanpa rencana multi-step)...")
             response, _ = await router.call(
                 messages=[{"role": "user", "content": task}],
-                temperature=0.5,
+                temperature=0.3,
                 max_tokens=4096,
             )
             return response
@@ -157,7 +157,7 @@ class AgenHandler:
                 if query:
                     sub_resp, _ = await router.call(
                         messages=[{"role": "user", "content": f"Konteks tugas: {task}\n\n{query}"}],
-                        temperature=0.4,
+                        temperature=0.3,
                         max_tokens=2048,
                     )
                     gathered_data.append(f"### {desc}\n{sub_resp}")
@@ -182,7 +182,7 @@ class AgenHandler:
                     gathered_data=combined_data[:8000],
                 ),
             }],
-            temperature=0.4,
+            temperature=0.3,
             max_tokens=4096,
         )
         return final_resp

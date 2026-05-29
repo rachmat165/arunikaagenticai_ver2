@@ -216,7 +216,7 @@ class RndHandler:
     async def _call_claude(self, prompt: str, model_router: ModelRouter) -> str:
         text, _ = await model_router.call(
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.4,
+            temperature=0.3,
             max_tokens=4096,
         )
         return text

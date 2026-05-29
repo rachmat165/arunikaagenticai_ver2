@@ -316,7 +316,7 @@ class ModelRouter:
         return content
 
     async def call(self, messages: list, system: Optional[str] = None,
-                   temperature: float = 0.7, max_tokens: int = 4096) -> Tuple[str, dict]:
+                   temperature: float = 0.3, max_tokens: int = 4096) -> Tuple[str, dict]:
         """Returns (response_text, usage_dict) where usage_dict has input_tokens, output_tokens, cost_usd."""
         if not self.client:
             await self.init_client()

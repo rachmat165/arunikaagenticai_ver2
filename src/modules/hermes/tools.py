@@ -427,7 +427,7 @@ class ToolExecutor:
             try:
                 text, _ = await router.call(
                     messages=[vision_msg],
-                    temperature=0.1,
+                    temperature=0.3,
                     max_tokens=2048,
                 )
                 analyses.append(f"=== Halaman {i}/{n_pages} ===\n{text}")

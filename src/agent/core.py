@@ -350,7 +350,7 @@ class ATGAgent:
             # Non-Anthropic: call biasa tanpa memory tools
             try:
                 text, usage_dict = await self.model_router.call(
-                    messages=messages, system=system, temperature=0.7, max_tokens=4096
+                    messages=messages, system=system, temperature=0.3, max_tokens=4096
                 )
                 total_input  = usage_dict["input_tokens"]
                 total_output = usage_dict["output_tokens"]
