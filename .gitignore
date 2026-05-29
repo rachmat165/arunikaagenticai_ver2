@@ -66,3 +66,13 @@ Thumbs.db
 *.tmp
 *.temp
 .cache/
+
+# Dokumen perusahaan sensitif (NDA, akta, keuangan, dll) — jangan push ke GitHub
+DokumenPerusahaan/
+skill/
+
+# File kosong tidak sengaja terbuat
+keluar
+langsung
+tampilkan
+update
