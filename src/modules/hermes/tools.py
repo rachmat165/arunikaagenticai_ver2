@@ -43,13 +43,22 @@ TOOL_SCHEMAS = [
     },
     {
         "name": "read_file",
-        "description": "Baca isi file dari proyek bot. Gunakan untuk membaca kode, config, atau dokumen internal.",
+        "description": (
+            "Baca isi file dari MANA SAJA — proyek bot, drive lokal, atau path absolut. "
+            "Mendukung: PDF, DOCX, XLSX, PPTX, TXT, MD, CSV, JSON, PY, dan format teks lainnya. "
+            "Gunakan path PERSIS seperti yang user berikan, termasuk drive letter Windows."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "path file relatif dari root proyek (contoh: src/config.py)"
+                    "description": (
+                        "Path file. Bisa berupa: "
+                        "path absolut Windows (contoh: P:\\Folder\\file.pdf atau C:/Users/nama/file.docx), "
+                        "UNC path (\\\\server\\share\\file), "
+                        "atau path relatif dari root proyek (contoh: src/config.py, data/laporan.pdf)"
+                    )
                 }
             },
             "required": ["path"]
@@ -168,15 +177,71 @@ class ToolExecutor:
         return self._fc.format_search_results(results, max_chars_each=2000)
 
     def _read_file(self, path: str) -> str:
-        safe_path = PROJECT_ROOT / path.lstrip("/").lstrip("\\")
-        if not safe_path.exists():
-            return f"❌ File tidak ditemukan: {path}"
-        if safe_path.stat().st_size > 50_000:
-            return f"❌ File terlalu besar (>{50_000} bytes): {path}"
+        # Resolve path — absolute (termasuk Windows drive letter) atau relatif
+        file_path = Path(path)
+        if not file_path.is_absolute():
+            # Coba juga sebagai Windows path jika ada drive letter (P:\...)
+            if len(path) >= 3 and path[1] == ":" and path[2] in ("/", "\\"):
+                file_path = Path(path)
+            else:
+                file_path = PROJECT_ROOT / path.lstrip("/").lstrip("\\")
+
+        if not file_path.exists():
+            return (
+                f"❌ File tidak ditemukan: `{path}`\n\n"
+                f"Path yang dicoba: `{file_path}`\n"
+                f"Pastikan path benar dan drive/folder bisa diakses dari komputer ini."
+            )
+
+        ext = file_path.suffix.lower()
+        size = file_path.stat().st_size
+
+        # Gambar → arahkan ke vision
+        from src.tools.file_reader import SUPPORTED_IMG
+        if ext in SUPPORTED_IMG:
+            return (
+                f"📸 File `{file_path.name}` adalah gambar ({ext.upper()}).\n"
+                f"Untuk menganalisis gambar, kirim file tersebut langsung ke chat Telegram "
+                f"sebagai foto atau file — bot akan menganalisis dengan Vision AI."
+            )
+
+        # PDF, DOCX, XLSX, PPTX — gunakan extractor
+        from src.tools.file_reader import (
+            SUPPORTED_PDF, SUPPORTED_DOCX, SUPPORTED_XLSX, SUPPORTED_PPTX,
+            _read_pdf, _read_docx, _read_xlsx, _read_pptx, _read_text,
+            SUPPORTED_TEXT,
+        )
+
         try:
-            return safe_path.read_text(encoding="utf-8")
+            if ext in SUPPORTED_PDF:
+                result = _read_pdf(str(file_path))
+            elif ext in SUPPORTED_DOCX:
+                result = _read_docx(str(file_path))
+            elif ext in SUPPORTED_XLSX:
+                result = _read_xlsx(str(file_path))
+            elif ext in SUPPORTED_PPTX:
+                result = _read_pptx(str(file_path))
+            elif ext in SUPPORTED_TEXT or size < 500_000:
+                result = _read_text(str(file_path))
+            else:
+                return (
+                    f"⚠️ Format `{ext}` tidak didukung untuk ekstraksi teks.\n"
+                    f"Format yang didukung: PDF, DOCX, XLSX, PPTX, TXT, MD, CSV, JSON, PY, dll."
+                )
         except Exception as e:
-            return f"❌ Gagal membaca {path}: {e}"
+            return f"❌ Gagal membaca file: {e}"
+
+        if "error" in result:
+            return f"❌ {result['error']}"
+
+        pages = result.get("pages", 1)
+        text = result.get("text", "")
+        fname = file_path.name
+        return (
+            f"📄 **{fname}** ({ext.upper()}, {pages} halaman, {len(text):,} karakter)\n"
+            f"Path: `{file_path}`\n\n"
+            f"---\n{text}"
+        )
 
     def _write_file(self, path: str, content: str) -> str:
         safe_path = PROJECT_ROOT / path.lstrip("/").lstrip("\\")
