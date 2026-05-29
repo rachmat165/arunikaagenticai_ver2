@@ -498,15 +498,18 @@ def load_memory() -> str:
 
 
 def load_skills_context() -> str:
-    """Baca semua skill yang tersedia sebagai konteks sistem."""
-    skills_dir = PROJECT_ROOT / "data" / "skills"
-    if not skills_dir.exists():
-        return ""
+    """Baca semua skill yang tersedia — dari local (data/skills/) dan Hermes (data/hermes_skills/)."""
     skills = []
-    for f in skills_dir.glob("*.md"):
-        try:
-            content = f.read_text(encoding="utf-8")
-            skills.append(f"--- Skill: {f.stem} ---\n{content[:1500]}")
-        except Exception:
-            pass
+    for skills_dir, label in [
+        (PROJECT_ROOT / "data" / "skills", "Local"),
+        (PROJECT_ROOT / "data" / "hermes_skills", "Hermes"),
+    ]:
+        if not skills_dir.exists():
+            continue
+        for f in sorted(skills_dir.glob("*.md")):
+            try:
+                content = f.read_text(encoding="utf-8")
+                skills.append(f"--- Skill [{label}]: {f.stem} ---\n{content[:1500]}")
+            except Exception:
+                pass
     return "\n\n".join(skills)

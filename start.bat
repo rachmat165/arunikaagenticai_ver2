@@ -23,15 +23,17 @@ echo  1. Start Bot Telegram
 echo  2. Update Aplikasi (GitHub + Python packages)
 echo  3. Setup Model AI
 echo  4. Hapus lock file (jika bot stuck)
+echo  5. Update Hermes Agent (cek release terbaru)
 echo  0. Keluar
 echo =========================================================
 echo.
-set /p CHOICE="Pilih menu [0-4]: "
+set /p CHOICE="Pilih menu [0-5]: "
 
 if "%CHOICE%"=="1" goto START_BOT
 if "%CHOICE%"=="2" goto UPDATE_MAIN
 if "%CHOICE%"=="3" goto SETUP_MODEL
 if "%CHOICE%"=="4" goto CLEAR_LOCK
+if "%CHOICE%"=="5" goto UPDATE_HERMES
 if "%CHOICE%"=="0" goto EXIT
 echo [!] Pilihan tidak valid
 timeout /t 1 >nul
@@ -201,6 +203,40 @@ echo.
 echo Gunakan perintah /settings di Telegram untuk memilih model AI.
 echo.
 pause
+goto MENU
+
+:UPDATE_HERMES
+cls
+echo =========================================================
+echo  [INFO] Update Hermes Agent
+echo  Sumber: github.com/NousResearch/hermes-agent
+echo =========================================================
+echo.
+
+REM --- Pastikan Python & venv tersedia ---
+call :FIND_PYTHON
+if "!PYTHON_EXE!"=="" (
+  echo [ERROR] Python tidak ditemukan. Jalankan menu 2 terlebih dahulu.
+  pause
+  goto MENU
+)
+call :ENSURE_VENV
+
+REM --- Cek koneksi internet ---
+echo [INFO] Memeriksa koneksi internet...
+ping -n 1 api.github.com >nul 2>&1
+if errorlevel 1 (
+  echo [ERROR] Tidak dapat terhubung ke api.github.com
+  echo         Periksa koneksi internet Anda.
+  pause
+  goto MENU
+)
+echo [OK] Koneksi internet tersedia.
+echo.
+
+REM --- Jalankan update script ---
+"%~dp0.venv311\Scripts\python.exe" "%~dp0scripts\update_hermes.py"
+
 goto MENU
 
 REM ==========================
