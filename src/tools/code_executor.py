@@ -59,14 +59,5 @@ async def apply_improvement(script: str, timeout: int = 60) -> dict:
 
 
 def restart_bot():
-    """
-    Restart bot process: jalankan run.py dalam subprocess baru
-    lalu exit proses saat ini.
-    """
-    subprocess.Popen(
-        [str(VENV_PYTHON), str(PROJECT_ROOT / "run.py")],
-        cwd=str(PROJECT_ROOT),
-        creationflags=subprocess.CREATE_NEW_CONSOLE,
-    )
-    # Exit current process — PTB will cleanly shut down
-    os._exit(0)
+    """Exit dengan kode 42 — start.bat mendeteksi ini dan restart otomatis."""
+    os._exit(42)
