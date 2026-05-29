@@ -488,7 +488,14 @@ Ketik pertanyaan bebas kapan saja! 🤖"""
                         pass
 
                 result = await self.rnd_module.riset_mitra(user_message, router, on_progress=progress_riset)
-                await msg.delete()
+
+                # Show final result dalam progress message
+                await msg.edit_text(
+                    f"🔍 *Riset Calon Mitra:* `{user_message}`\n\n"
+                    f"{self._render_progress_bar(3, 3, 'Complete ✅')}\n\n"
+                    "📊 Hasil riset siap di bawah ini:",
+                    parse_mode="Markdown"
+                )
                 await self._send_long(update, result)
 
             elif rnd_state == "swot":
@@ -514,7 +521,14 @@ Ketik pertanyaan bebas kapan saja! 🤖"""
                         pass
 
                 result = await self.rnd_module.analisis_swot(user_message, router, on_progress=progress_swot)
-                await msg.delete()
+
+                # Show final result dalam progress message
+                await msg.edit_text(
+                    f"📈 *Analisis SWOT:* `{user_message}`\n\n"
+                    f"{self._render_progress_bar(3, 3, 'Complete ✅')}\n\n"
+                    "📊 Hasil analisis siap di bawah ini:",
+                    parse_mode="Markdown"
+                )
                 await self._send_long(update, result)
 
             elif rnd_state == "proposal_step1":
@@ -552,7 +566,14 @@ Ketik pertanyaan bebas kapan saja! 🤖"""
                         pass
 
                 result = await self.rnd_module.buat_proposal(partner, user_message, router, on_progress=progress_proposal)
-                await msg.delete()
+
+                # Show final result dalam progress message
+                await msg.edit_text(
+                    f"📋 *Buat Proposal:* `{partner} × ATG`\n\n"
+                    f"{self._render_progress_bar(3, 3, 'Complete ✅')}\n\n"
+                    "📊 Proposal siap di bawah ini:",
+                    parse_mode="Markdown"
+                )
                 await self._send_long(update, result)
 
             elif rnd_state == "tech":
@@ -730,7 +751,14 @@ Ketik pertanyaan bebas kapan saja! 🤖"""
                 except Exception:
                     pass
             result = await self.rnd_module.riset_mitra(args, router, on_progress=on_progress)
-            await msg.delete()
+
+            # Show final result dalam progress message
+            await msg.edit_text(
+                f"🔍 *Riset:* `{args}`\n\n"
+                f"{self._render_progress_bar(3, 3, 'Complete ✅')}\n\n"
+                "📊 Hasil riset siap di bawah ini:",
+                parse_mode="Markdown"
+            )
             await self._send_long(update, result)
             return
 
