@@ -14,6 +14,7 @@ from src.tools.surat_generator import SuratGenerator
 from src.tools.code_executor import execute_python, apply_improvement, restart_bot
 from src.tools.api_balance import check_openrouter_balance, check_anthropic_balance, IDR_RATE
 from src.tools.file_reader import extract_text, is_image, is_supported
+from src.tools.general_pdf import generate_document_pdf_async
 import aiosqlite
 import logging
 from datetime import datetime as _dt
@@ -47,22 +48,35 @@ class TelegramGateway:
 
             welcome_text = """👋 Selamat datang di REFLECTIVE KOALA!
 
-AI Agent komprehensif untuk PT. Arunika Teknologi Global.
+AI Agent komprehensif PT. Arunika Teknologi Global.
 
-Pilih fungsi:
-• /sek - Sekretaris (surat, presentasi, notulensi)
-• /rnd - R&D (riset mitra, analisis)
-• /sosmed - Social Media (konten, analitik)
-• /resources - Resources (knowledge base, RAG)
-• /auto - Automation (python, cron)
-• /fungsi - Lihat semua fungsi yang tersedia
-• /model - Pilih model Claude dari API key Anda
-• /settings - Pengaturan provider & model
-• /compress - Padatkan percakapan (hemat token)
-• /credit - Cek penggunaan & estimasi biaya API
-• /help - Bantuan
+📋 MENU UTAMA:
+• /tools — Lihat SEMUA skill & tools
+• /fungsi — Daftar lengkap perintah
 
-Atau ketik pertanyaan bebas! 🤖"""
+📄 DOKUMEN & PDF:
+• /pdf <judul> — Generate PDF dari teks apapun
+• /sek — Surat resmi ATG (letterhead PDF)
+• Kirim file PDF/DOCX/TXT → dibaca AI
+• Kirim foto/screenshot → dianalisis Vision AI
+
+🤖 AGEN & RISET:
+• /h <tugas> — Hermes Agent (tool calling)
+• /agen <tugas> — Agen otonom multi-step
+• /rnd — R&D & riset mitra
+• /karir — Evaluasi kerja, CV, riset perusahaan
+
+🎨 KREASI:
+• /gambar <deskripsi> — Generate gambar AI
+• /sosmed — Konten social media
+• /email — Kirim email
+
+⚙️ PENGATURAN:
+• /settings — Ganti provider & model AI
+• /recall — Cari percakapan lama
+• /credit — Cek biaya API
+
+Ketik pertanyaan bebas kapan saja! 🤖"""
 
             if not update.message:
                 raise RuntimeError("update.message is None in start() handler")
@@ -367,6 +381,12 @@ Atau ketik pertanyaan bebas! 🤖"""
         karir_state = (context.user_data or {}).get("karir_state")
         if karir_state:
             await self._handle_karir_state(update, context, karir_state, user_message)
+            return
+
+        # ── PDF state machine ──────────────────────────────────────────────
+        pdf_state = (context.user_data or {}).get("pdf_state")
+        if pdf_state:
+            await self._handle_pdf_state(update, context, pdf_state, user_message)
             return
 
         # ── Normal chat ────────────────────────────────────────────────────
@@ -805,6 +825,173 @@ metadata:
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await update.message.reply_text("Modul Automation:", reply_markup=reply_markup)
+
+    # ──────────────────────────────────────────────────────────────────────
+    # PDF GENERATOR  (/pdf) — generate PDF dari teks/markdown apapun
+    # ──────────────────────────────────────────────────────────────────────
+
+    async def pdf_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user_id = update.effective_user.id
+        if not await check_user_allowed(user_id):
+            return
+        if not update.message:
+            return
+
+        title_arg = " ".join(context.args).strip() if context.args else ""
+
+        if not title_arg:
+            await update.message.reply_text(
+                "📄 *Generator PDF*\n\n"
+                "Generate PDF dari TEKS APAPUN — laporan, riset, artikel, notulensi.\n\n"
+                "**Cara 1:** `/pdf <judul>` lalu kirim isi konten\n"
+                "**Cara 2:** `/pdf` → bot minta judul dulu\n\n"
+                "✅ *Contoh:*\n"
+                "• `/pdf Laporan Riset AI Tools 2025`\n"
+                "• `/pdf Notulensi Rapat Direksi 29 Mei`\n"
+                "• `/pdf Strategi Marketing Q2 2025`\n\n"
+                "_Untuk surat resmi dengan letterhead ATG → gunakan /sek_",
+                parse_mode="Markdown",
+            )
+            if context.user_data is not None:
+                context.user_data["pdf_state"] = "waiting_title"
+            return
+
+        # Ada judul dari args — minta konten
+        if context.user_data is not None:
+            context.user_data["pdf_state"] = "waiting_content"
+            context.user_data["pdf_title"] = title_arg
+
+        await update.message.reply_text(
+            f"📄 *Judul PDF:* `{title_arg}`\n\n"
+            "Sekarang kirim **isi konten** dokumen.\n"
+            "Boleh panjang, boleh pakai format Markdown:\n"
+            "• `## Heading` untuk judul bagian\n"
+            "• `**teks tebal**` untuk bold\n"
+            "• `- item` untuk bullet list\n\n"
+            "_Bot akan generate PDF dan kirim sebagai file._",
+            parse_mode="Markdown",
+        )
+
+    async def _handle_pdf_state(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+        pdf_state: str,
+        user_message: str,
+    ):
+        msg = update.message
+        if not msg or context.user_data is None:
+            return
+        ud = context.user_data
+
+        if pdf_state == "waiting_title":
+            ud["pdf_title"] = user_message.strip()
+            ud["pdf_state"] = "waiting_content"
+            await msg.reply_text(
+                f"📄 *Judul:* `{user_message.strip()}`\n\n"
+                "Kirim isi konten dokumen (boleh panjang, boleh pakai Markdown):",
+                parse_mode="Markdown",
+            )
+            return
+
+        if pdf_state == "waiting_content":
+            ud.pop("pdf_state", None)
+            title = ud.pop("pdf_title", "Dokumen ATG")
+            content = user_message.strip()
+
+            if not content:
+                await msg.reply_text("❌ Konten tidak boleh kosong.")
+                return
+
+            status = await msg.reply_text(
+                f"⏳ Membuat PDF: *{title}*...", parse_mode="Markdown"
+            )
+            try:
+                pdf_path = await generate_document_pdf_async(title, content)
+                await status.delete()
+                with open(pdf_path, "rb") as f:
+                    safe_name = "".join(
+                        c if c.isalnum() or c in " -_" else "" for c in title[:40]
+                    ).strip().replace(" ", "_") or "dokumen"
+                    await msg.reply_document(
+                        document=f,
+                        filename=f"{safe_name}.pdf",
+                        caption=(
+                            f"📄 *{title}*\n"
+                            f"✅ PDF berhasil dibuat oleh Reflective Koala ATG"
+                        ),
+                        parse_mode="Markdown",
+                    )
+            except Exception as e:
+                logger.exception("PDF generation error: %s", e)
+                await status.edit_text(f"❌ Gagal membuat PDF: {e}")
+
+    # ──────────────────────────────────────────────────────────────────────
+    # TOOLS MENU  (/tools) — tampilkan semua skill & tools
+    # ──────────────────────────────────────────────────────────────────────
+
+    async def tools_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user_id = update.effective_user.id
+        if not await check_user_allowed(user_id):
+            return
+        if not update.message:
+            return
+
+        text = (
+            "🛠️ *SEMUA SKILL & TOOLS — REFLECTIVE KOALA ATG*\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+
+            "📄 *DOKUMEN & PDF*\n"
+            "  /pdf <judul> — Generate PDF dari teks/markdown apapun\n"
+            "  /sek → Buat Surat — Surat resmi ATG (letterhead + logo)\n"
+            "  Kirim file PDF/DOCX/TXT → bot membaca & menganalisis\n\n"
+
+            "📸 *GAMBAR & SCREENSHOT*\n"
+            "  Kirim foto/screenshot → AI Vision menganalisis\n"
+            "  Kirim gambar sebagai file → AI Vision menganalisis\n"
+            "  /gambar <deskripsi> — Generate gambar AI (DALL-E, FLUX)\n\n"
+
+            "🔮 *HERMES AGENT TOOLS* (via /h <tugas>)\n"
+            "  🌐 web_search — Cari informasi real-time di internet\n"
+            "  📂 read_file — Baca file dari proyek bot\n"
+            "  💾 write_file — Tulis/simpan file baru\n"
+            "  🧠 remember — Simpan ke memori permanen antar sesi\n"
+            "  🐍 run_python — Eksekusi kode Python\n"
+            "  ⚡ create_skill — Buat skill baru secara mandiri\n\n"
+
+            "🤖 *AGEN OTONOM* (via /agen <tugas>)\n"
+            "  Plan → Research (web) → Synthesize → Deliver\n\n"
+
+            "💼 *KARIR* (via /karir)\n"
+            "  Evaluasi lowongan (A-F scoring)\n"
+            "  Buat CV profesional ATS-optimized\n"
+            "  Riset perusahaan untuk interview\n"
+            "  Analisis evolusi bot\n\n"
+
+            "🔬 *R&D* (via /rnd)\n"
+            "  Riset calon mitra bisnis (web search)\n"
+            "  Analisis SWOT komprehensif\n"
+            "  Buat proposal kemitraan\n"
+            "  Riset teknologi terkini\n"
+            "  Scrape & ringkas website\n\n"
+
+            "📝 *SEKRETARIS* (via /sek)\n"
+            "  Buat surat resmi PDF (letterhead ATG)\n"
+            "  Presentasi, notulensi, agenda, reminder\n\n"
+
+            "💬 *KOMUNIKASI*\n"
+            "  /email — Kirim email via SMTP ATG\n"
+            "  /recall — Cari percakapan lama\n\n"
+
+            "⚙️ *UTILITAS*\n"
+            "  /code — Jalankan Python script\n"
+            "  /perbaiki — Improve bot dari deskripsi\n"
+            "  /credit — Cek penggunaan & biaya API\n"
+            "  /settings — Ganti model AI\n"
+            "  /compress — Padatkan konteks percakapan\n"
+        )
+
+        await update.message.reply_text(text, parse_mode="Markdown")
 
     # ──────────────────────────────────────────────────────────────────────
     # HERMES AGENT  (/h) — NousResearch/hermes-agent tool-calling loop
@@ -2302,6 +2489,9 @@ SELESAI"""
         app.add_handler(CommandHandler("hermes", self.hermes_cmd))
         app.add_handler(CommandHandler("recall", self.recall_cmd))
         app.add_handler(CommandHandler("ingat", self.recall_cmd))
+        app.add_handler(CommandHandler("pdf", self.pdf_cmd))
+        app.add_handler(CommandHandler("tools", self.tools_cmd))
+        app.add_handler(CommandHandler("skill", self.tools_cmd))
 
         app.add_handler(CallbackQueryHandler(self.provider_callback, pattern="^provider_"))
         app.add_handler(CallbackQueryHandler(self.orgroup_callback, pattern="^orgroup_"))
