@@ -70,6 +70,19 @@ class TelegramGateway:
         self.agent24.start()
         logger.info("Agent24 runner started successfully")
 
+    def _render_progress_bar(self, current: int, total: int, task_name: str = "", width: int = 20) -> str:
+        """Render progress bar untuk long-running tasks."""
+        if total <= 0:
+            pct = 0
+            done = 0
+        else:
+            pct = int(100 * current / total)
+            done = int(width * current / total)
+
+        bar = "█" * done + "░" * (width - done)
+        task_str = f"\n💼 _{task_name}_" if task_name else ""
+        return f"`[{bar}]` {pct}%  •  Step {current}/{total}{task_str}"
+
     def _get_presentation_skill_hint(self) -> str:
         """Ambil hint tentang Claude Skills untuk presentasi/PowerPoint."""
         from pathlib import Path as _Path
@@ -454,23 +467,53 @@ Ketik pertanyaan bebas kapan saja! 🤖"""
 
             if rnd_state == "riset":
                 msg = await update.message.reply_text(
-                    f"🔍 *Riset:* `{user_message}`\n\n"
-                    "⏱ Estimasi: 20\\-30 detik\n"
-                    "🌐 *Step 1/3* — Searching web via Firecrawl\\.\\.\\.",
-                    parse_mode="MarkdownV2"
+                    f"🔍 *Riset Calon Mitra:* `{user_message}`\n\n"
+                    f"{self._render_progress_bar(1, 3, 'Searching web data')}\n\n"
+                    "🌐 Mencari informasi via Firecrawl\\.\\.\\.",
+                    parse_mode="Markdown"
                 )
-                result = await self.rnd_module.riset_mitra(user_message, router, on_progress=await make_progress(msg))
+
+                step_counter = [1]
+
+                async def progress_riset(text: str):
+                    step_counter[0] += 1
+                    try:
+                        await msg.edit_text(
+                            f"🔍 *Riset Calon Mitra:* `{user_message}`\n\n"
+                            f"{self._render_progress_bar(min(step_counter[0], 3), 3, text)}\n\n"
+                            f"🔄 {text}\\.\\.\\.",
+                            parse_mode="Markdown"
+                        )
+                    except Exception:
+                        pass
+
+                result = await self.rnd_module.riset_mitra(user_message, router, on_progress=progress_riset)
                 await msg.delete()
                 await self._send_long(update, result)
 
             elif rnd_state == "swot":
                 msg = await update.message.reply_text(
-                    f"📈 *SWOT:* `{user_message}`\n\n"
-                    "⏱ Estimasi: 20\\-30 detik\n"
-                    "🌐 *Step 1/3* — Searching web via Firecrawl\\.\\.\\.",
-                    parse_mode="MarkdownV2"
+                    f"📈 *Analisis SWOT:* `{user_message}`\n\n"
+                    f"{self._render_progress_bar(1, 3, 'Collecting data')}\n\n"
+                    "🔍 Mengumpulkan informasi\\.\\.\\.",
+                    parse_mode="Markdown"
                 )
-                result = await self.rnd_module.analisis_swot(user_message, router, on_progress=await make_progress(msg))
+
+                step_counter = [1]
+
+                async def progress_swot(text: str):
+                    step_counter[0] += 1
+                    try:
+                        await msg.edit_text(
+                            f"📈 *Analisis SWOT:* `{user_message}`\n\n"
+                            f"{self._render_progress_bar(min(step_counter[0], 3), 3, text)}\n\n"
+                            f"🔄 {text}\\.\\.\\.",
+                            parse_mode="Markdown"
+                        )
+                    except Exception:
+                        pass
+
+                result = await self.rnd_module.analisis_swot(user_message, router, on_progress=progress_swot)
                 await msg.delete()
                 await self._send_long(update, result)
 
@@ -488,12 +531,27 @@ Ketik pertanyaan bebas kapan saja! 🤖"""
             elif rnd_state == "proposal_step2":
                 partner = context.user_data.get("rnd_partner", "Mitra")
                 msg = await update.message.reply_text(
-                    f"📋 *Proposal:* `{partner} × ATG`\n\n"
-                    "⏱ Estimasi: 20\\-30 detik\n"
-                    "🌐 *Step 1/3* — Searching profil mitra\\.\\.\\.",
-                    parse_mode="MarkdownV2"
+                    f"📋 *Buat Proposal:* `{partner} × ATG`\n\n"
+                    f"{self._render_progress_bar(1, 3, 'Research partner')}\n\n"
+                    "🔍 Riset profil mitra\\.\\.\\.",
+                    parse_mode="Markdown"
                 )
-                result = await self.rnd_module.buat_proposal(partner, user_message, router, on_progress=await make_progress(msg))
+
+                step_counter = [1]
+
+                async def progress_proposal(text: str):
+                    step_counter[0] += 1
+                    try:
+                        await msg.edit_text(
+                            f"📋 *Buat Proposal:* `{partner} × ATG`\n\n"
+                            f"{self._render_progress_bar(min(step_counter[0], 3), 3, text)}\n\n"
+                            f"🔄 {text}\\.\\.\\.",
+                            parse_mode="Markdown"
+                        )
+                    except Exception:
+                        pass
+
+                result = await self.rnd_module.buat_proposal(partner, user_message, router, on_progress=progress_proposal)
                 await msg.delete()
                 await self._send_long(update, result)
 
@@ -653,13 +711,22 @@ Ketik pertanyaan bebas kapan saja! 🤖"""
             router = await self._ensure_model_router(user_id)
             msg = await update.message.reply_text(
                 f"🔍 *Riset:* `{args}`\n\n"
-                "⏱ Estimasi: 20\\-30 detik\n"
-                "🌐 *Step 1/3* — Searching web via Firecrawl\\.\\.\\.",
-                parse_mode="MarkdownV2"
+                f"{self._render_progress_bar(1, 3, 'Searching data')}\n\n"
+                "🌐 Mencari informasi via Firecrawl\\.\\.\\.",
+                parse_mode="Markdown"
             )
+
+            step_counter = [1]
+
             async def on_progress(text):
+                step_counter[0] += 1
                 try:
-                    await msg.edit_text(text, parse_mode="Markdown")
+                    await msg.edit_text(
+                        f"🔍 *Riset:* `{args}`\n\n"
+                        f"{self._render_progress_bar(min(step_counter[0], 3), 3, text)}\n\n"
+                        f"🔄 {text}\\.\\.\\.",
+                        parse_mode="Markdown"
+                    )
                 except Exception:
                     pass
             result = await self.rnd_module.riset_mitra(args, router, on_progress=on_progress)
