@@ -116,6 +116,32 @@ TOOL_SCHEMAS = [
         }
     },
     {
+        "name": "generate_pdf",
+        "description": (
+            "Buat file PDF dari judul dan konten teks/markdown lalu kirim ke Telegram. "
+            "WAJIB gunakan tool ini ketika user meminta membuat PDF, laporan, atau dokumen "
+            "dari hasil riset/analisis yang baru saja dibuat dalam percakapan ini."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "title": {
+                    "type": "string",
+                    "description": "judul dokumen PDF (singkat dan deskriptif)"
+                },
+                "content": {
+                    "type": "string",
+                    "description": "isi konten lengkap dalam format Markdown"
+                },
+                "subtitle": {
+                    "type": "string",
+                    "description": "sub-judul opsional"
+                }
+            },
+            "required": ["title", "content"]
+        }
+    },
+    {
         "name": "create_skill",
         "description": "Buat skill baru untuk bot ini. Skill adalah file Markdown yang mendefinisikan panduan atau prosedur untuk tugas tertentu.",
         "input_schema": {
@@ -147,7 +173,7 @@ class ToolExecutor:
             if settings.firecrawl_api_key else None
         )
 
-    async def execute(self, tool_name: str, tool_input: dict, router=None, on_progress=None) -> str:
+    async def execute(self, tool_name: str, tool_input: dict, router=None, on_progress=None, on_file=None) -> str:
         """Eksekusi satu tool call. Return string hasil."""
         try:
             if tool_name == "web_search":
@@ -160,6 +186,8 @@ class ToolExecutor:
                 return self._remember(**tool_input)
             elif tool_name == "run_python":
                 return await self._run_python(**tool_input)
+            elif tool_name == "generate_pdf":
+                return await self._generate_pdf(on_file=on_file, **tool_input)
             elif tool_name == "create_skill":
                 return self._create_skill(**tool_input)
             else:
@@ -167,6 +195,20 @@ class ToolExecutor:
         except Exception as e:
             logger.exception("Tool %s error: %s", tool_name, e)
             return f"❌ Error menjalankan tool {tool_name}: {e}"
+
+    async def _generate_pdf(self, title: str, content: str, subtitle: str = "", on_file=None) -> str:
+        """Generate PDF dari konten dan opsional kirim ke Telegram via on_file callback."""
+        from src.tools.general_pdf import generate_document_pdf_async
+        path = await generate_document_pdf_async(title, content, subtitle=subtitle)
+        p = Path(path)
+        size_kb = p.stat().st_size // 1024
+        if on_file:
+            await on_file(path)
+        return (
+            f"✅ PDF *{title}* berhasil dibuat!\n"
+            f"📄 {p.name} ({size_kb} KB)\n"
+            f"📤 File dikirim ke Telegram."
+        )
 
     async def _web_search(self, query: str, limit: int = 3) -> str:
         if not self._fc:

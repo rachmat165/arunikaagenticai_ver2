@@ -389,6 +389,50 @@ Ketik pertanyaan bebas kapan saja! 🤖"""
             await self._handle_pdf_state(update, context, pdf_state, user_message)
             return
 
+        # ── Deteksi "buatkan PDF dari hasil diatas" ────────────────────────
+        _pdf_triggers = [
+            "buatkan pdf", "jadikan pdf", "buat pdf", "simpan pdf",
+            "dalam pdf", "ke pdf", "generate pdf", "cetak pdf",
+            "export pdf", "dijadikan pdf", "dibuatkan pdf",
+        ]
+        if any(t in user_message.lower() for t in _pdf_triggers):
+            # Ambil respons AI terakhir dari context untuk dijadikan isi PDF
+            ctx_msgs = await self.agent.context_manager.get_context(user_id, limit=15)
+            last_ai = next(
+                (m["content"] for m in reversed(ctx_msgs)
+                 if m.get("role") == "assistant" and len(str(m.get("content", ""))) > 150),
+                None,
+            )
+            if last_ai:
+                status = await update.message.reply_text("📄 Membuat PDF dari hasil sebelumnya...")
+                try:
+                    import re as _re
+                    content_str = str(last_ai)
+                    # Cari judul dari baris pertama yang bermakna
+                    title = "Hasil Analisis ATG"
+                    for ln in content_str.split("\n")[:6]:
+                        clean = _re.sub(r"[*#`_\[\]]", "", ln).strip()
+                        if len(clean) > 12:
+                            title = clean[:60]
+                            break
+                    pdf_path = await generate_document_pdf_async(title, content_str)
+                    from pathlib import Path as _Path
+                    with open(pdf_path, "rb") as f:
+                        await update.message.reply_document(
+                            document=f,
+                            filename=_Path(pdf_path).name,
+                            caption=f"📄 *{title}*\n_PDF dari hasil percakapan — Reflective Koala ATG_",
+                            parse_mode="Markdown",
+                        )
+                    await status.delete()
+                except Exception as e:
+                    logger.exception("Auto PDF error: %s", e)
+                    await status.edit_text(
+                        f"❌ Gagal membuat PDF: {e}\n\n"
+                        f"💡 Coba: `/pdf {title}` lalu paste konten secara manual."
+                    )
+                return
+
         # ── Normal chat ────────────────────────────────────────────────────
         await update.message.chat.send_action("typing")
         try:
@@ -1087,10 +1131,36 @@ metadata:
             try: await msg.edit_text(t, parse_mode="Markdown")
             except Exception: pass
 
+        generated_files: list = []
+        async def on_file(file_path: str):
+            generated_files.append(file_path)
+
         try:
-            result = await self.hermes.run(task, router, on_progress=on_progress, user_id=user_id)
+            result = await self.hermes.run(
+                task, router,
+                on_progress=on_progress,
+                on_file=on_file,
+                user_id=user_id,
+            )
             await msg.delete()
             await self._send_long(update, result)
+            # Kirim file PDF yang dihasilkan tool generate_pdf
+            for fp in generated_files:
+                try:
+                    from pathlib import Path as _Path
+                    with open(fp, "rb") as f:
+                        stem = _Path(fp).stem
+                        # Ambil bagian judul dari nama file (abaikan timestamp prefix)
+                        parts = stem.split("_", 2)
+                        label = parts[2].replace("_", " ") if len(parts) >= 3 else stem
+                        await update.message.reply_document(
+                            document=f,
+                            filename=_Path(fp).name,
+                            caption=f"📄 *{label}*\n_Dibuat oleh Hermes Agent ATG_",
+                            parse_mode="Markdown",
+                        )
+                except Exception as ef:
+                    logger.error("Gagal kirim file Hermes: %s", ef)
         except Exception as e:
             logger.exception("Hermes error: %s", e)
             await msg.edit_text(

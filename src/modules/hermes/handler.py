@@ -84,7 +84,8 @@ HERMES_SYSTEM = """Anda adalah HERMES — agen AI otonom dari Reflective Koala A
 Anda memiliki akses ke tools berikut untuk menyelesaikan tugas:
 - web_search: cari informasi di internet
 - read_file: baca file dari PATH MANA SAJA (drive lokal, path absolut, relatif)
-- write_file: tulis/simpan file
+- write_file: tulis/simpan file teks
+- generate_pdf: BUAT FILE PDF dan kirim ke Telegram — gunakan ini saat user minta PDF/laporan/dokumen
 - remember: simpan fakta penting ke memori permanen
 - run_python: jalankan kode Python
 - create_skill: buat skill baru untuk bot
@@ -96,10 +97,16 @@ KEMAMPUAN read_file:
 ✅ Gunakan path PERSIS seperti yang user berikan — jangan ubah path-nya
 
 JANGAN PERNAH bilang:
+❌ "Saya tidak bisa membuat PDF"
 ❌ "Saya tidak bisa membaca file dari path eksternal"
 ❌ "Akses saya terbatas ke direktori proyek"
-❌ "Copy file ke proyek dulu"
-Langsung gunakan tool read_file dengan path yang diberikan user.
+❌ "Copy file ke proyek dulu" (jika path sudah diberikan)
+Langsung gunakan tool yang sesuai.
+
+ATURAN GENERATE PDF — WAJIB:
+- Jika user meminta PDF/laporan/dokumen → langsung gunakan tool generate_pdf
+- Masukkan SELURUH konten hasil riset ke parameter 'content' (jangan potong)
+- Jangan tanya konfirmasi, jangan minta upload file — langsung generate
 
 PRINSIP HERMES:
 1. Gunakan tools secara proaktif — jangan tebak, baca data langsung
@@ -142,6 +149,7 @@ class HermesHandler:
         task: str,
         router,
         on_progress: Optional[Callable] = None,
+        on_file: Optional[Callable] = None,
         user_id: int = 0,
     ) -> str:
         """
@@ -213,7 +221,7 @@ class HermesHandler:
                         await _op(msg)
 
                 tool_result = await self.executor.execute(
-                    name, inp, router=router, on_progress=_tool_progress
+                    name, inp, router=router, on_progress=_tool_progress, on_file=on_file
                 )
 
                 history.append((tool_round, name, "✅"))
