@@ -6,6 +6,8 @@ from src.agent.model_router import OPENROUTER_IMAGE_MODELS, generate_image_openr
 from src.database import set_user_model, get_user_model, get_user_usage, get_usage_by_model
 from src.config import settings
 from src.modules.rnd import RndHandler
+from src.modules.karir import KarirHandler
+from src.modules.agen import AgenHandler
 from src.tools.email_sender import send_email, test_smtp_connection
 from src.tools.surat_generator import SuratGenerator
 from src.tools.code_executor import execute_python, apply_improvement, restart_bot
@@ -22,6 +24,8 @@ class TelegramGateway:
         self.db_path = db_path
         self.agent = ATGAgent()
         self.rnd_module = RndHandler()
+        self.karir_module = KarirHandler()
+        self.agen_module = AgenHandler()
         self.surat_gen = SuratGenerator(settings.output_dir)
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -357,6 +361,12 @@ Atau ketik pertanyaan bebas! 🤖"""
             await self._handle_email_state(update, context, email_state, user_message)
             return
 
+        # ── Karir state machine ────────────────────────────────────────────
+        karir_state = (context.user_data or {}).get("karir_state")
+        if karir_state:
+            await self._handle_karir_state(update, context, karir_state, user_message)
+            return
+
         # ── Normal chat ────────────────────────────────────────────────────
         await update.message.chat.send_action("typing")
         try:
@@ -658,6 +668,14 @@ metadata:
             "  /start — Menu utama\n"
             "  /help — Panduan lengkap\n\n"
 
+            "💼 *SKILL BARU*\n"
+            "  /karir — Evaluasi lowongan, buat CV, riset perusahaan\n"
+            "    ├ Evaluasi Lowongan (A-F scoring — Career-Ops)\n"
+            "    ├ Buat CV Profesional (ATS-optimized)\n"
+            "    ├ Riset Perusahaan (untuk interview)\n"
+            "    └ Evolusi Bot (analisis & saran perbaikan — Hermes)\n"
+            "  /agen — Agen Otonom multi-step (CowAgent)\n"
+            "    └ Kirim tugas kompleks → AI plan & execute otomatis\n\n"
             "💬 *CHAT BEBAS*\n"
             "  Ketik pesan apapun → dijawab oleh AI\n"
             "  Konteks percakapan tersimpan otomatis\n"
@@ -780,6 +798,192 @@ metadata:
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await update.message.reply_text("Modul Automation:", reply_markup=reply_markup)
+
+    # ──────────────────────────────────────────────────────────────────────
+    # KARIR  (/karir) — Career-Ops methodology
+    # ──────────────────────────────────────────────────────────────────────
+
+    async def karir(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user_id = update.effective_user.id
+        if not await check_user_allowed(user_id):
+            return
+        if not update.message:
+            return
+
+        # Support inline args: /karir eval <url atau teks>
+        args = " ".join(context.args).strip() if context.args else ""
+        if args:
+            router = await self._ensure_model_router(user_id)
+            msg = await update.message.reply_text(
+                f"💼 *Evaluasi Pekerjaan*\n\n⏳ Menganalisis...",
+                parse_mode="Markdown",
+            )
+            async def _prog(t):
+                try: await msg.edit_text(t, parse_mode="Markdown")
+                except Exception: pass
+            result = await self.karir_module.eval_pekerjaan(args, router, on_progress=_prog)
+            await msg.delete()
+            await self._send_long(update, result)
+            return
+
+        fc_ok = "✅ Web search aktif" if self.karir_module.has_firecrawl() else "⚠️ Firecrawl belum dikonfigurasi"
+        keyboard = [
+            [InlineKeyboardButton("💼 Evaluasi Lowongan Kerja", callback_data="karir_eval")],
+            [InlineKeyboardButton("📄 Buat CV Profesional", callback_data="karir_cv")],
+            [InlineKeyboardButton("🏢 Riset Perusahaan", callback_data="karir_riset")],
+            [InlineKeyboardButton("🧬 Evolusi Bot (Hermes)", callback_data="karir_evolusi")],
+        ]
+        await update.message.reply_text(
+            f"💼 *Modul Karir*\n_{fc_ok}_\n\n"
+            "Pilih fungsi atau langsung kirim:\n"
+            "`/karir <URL atau deskripsi lowongan>`",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="Markdown",
+        )
+
+    async def karir_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        query = update.callback_query
+        if not query or not query.data or context.user_data is None:
+            return
+        await query.answer()
+        data = query.data
+
+        if data == "karir_eval":
+            context.user_data["karir_state"] = "eval"
+            await query.edit_message_text(
+                "💼 *Evaluasi Lowongan Kerja*\n\n"
+                "Kirim salah satu:\n"
+                "• URL lowongan (LinkedIn, Jobstreet, Glints, dll)\n"
+                "• Teks deskripsi pekerjaan (paste langsung)\n\n"
+                "_Contoh: https://linkedin.com/jobs/view/..._",
+                parse_mode="Markdown",
+            )
+
+        elif data == "karir_cv":
+            context.user_data["karir_state"] = "cv_info"
+            await query.edit_message_text(
+                "📄 *Buat CV Profesional*\n\n"
+                "Ceritakan tentang dirimu (pengalaman, keahlian, pendidikan) "
+                "dan posisi/perusahaan yang ditarget:\n\n"
+                "_Contoh: Saya software engineer 5 tahun di fintech, "
+                "ingin apply ke posisi AI Engineer di startup unicorn..._",
+                parse_mode="Markdown",
+            )
+
+        elif data == "karir_riset":
+            context.user_data["karir_state"] = "riset"
+            await query.edit_message_text(
+                "🏢 *Riset Perusahaan*\n\n"
+                "Masukkan nama perusahaan yang ingin diriset:\n\n"
+                "_Contoh: Gojek, Tokopedia, Telkom Indonesia, Google_",
+                parse_mode="Markdown",
+            )
+
+        elif data == "karir_evolusi":
+            context.user_data["karir_state"] = "evolusi"
+            await query.edit_message_text(
+                "🧬 *Evolusi Bot — Hermes Methodology*\n\n"
+                "Tempel beberapa contoh percakapan atau keluhan tentang bot ini.\n"
+                "AI akan menganalisis pola dan menyarankan perbaikan.\n\n"
+                "_Atau ketik 'auto' untuk gunakan log percakapan terbaru_",
+                parse_mode="Markdown",
+            )
+
+    async def _handle_karir_state(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+        karir_state: str,
+        user_message: str,
+    ):
+        msg = update.message
+        if not msg or context.user_data is None:
+            return
+        context.user_data.pop("karir_state", None)
+        user_id = update.effective_user.id if update.effective_user else 0
+        router = await self._ensure_model_router(user_id)
+
+        status = await msg.reply_text("⏳ AI sedang memproses...")
+
+        async def on_progress(t: str):
+            try: await status.edit_text(t, parse_mode="Markdown")
+            except Exception: pass
+
+        try:
+            if karir_state == "eval":
+                result = await self.karir_module.eval_pekerjaan(user_message, router, on_progress)
+
+            elif karir_state == "cv_info":
+                result = await self.karir_module.buat_cv(user_message, "", router, on_progress)
+
+            elif karir_state == "riset":
+                result = await self.karir_module.riset_perusahaan(user_message, router, on_progress)
+
+            elif karir_state == "evolusi":
+                if user_message.strip().lower() == "auto":
+                    hist = await self.agent.context_manager.get_context(user_id, limit=30)
+                    samples = "\n".join(
+                        f"[{m['role'].upper()}]: {str(m['content'])[:300]}"
+                        for m in hist
+                    ) if hist else "Tidak ada riwayat percakapan tersimpan."
+                else:
+                    samples = user_message
+                result = await self.karir_module.analisis_evolusi(samples, router, on_progress)
+
+            else:
+                result = "❌ State tidak dikenal."
+
+            await status.delete()
+            await self._send_long(update, result)
+
+        except Exception as e:
+            logger.exception("Karir handler error: %s", e)
+            await status.edit_text(f"❌ Gagal: {e}")
+
+    # ──────────────────────────────────────────────────────────────────────
+    # AGEN OTONOM  (/agen) — CowAgent methodology
+    # ──────────────────────────────────────────────────────────────────────
+
+    async def agen_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user_id = update.effective_user.id
+        if not await check_user_allowed(user_id):
+            return
+        if not update.message:
+            return
+
+        task = " ".join(context.args).strip() if context.args else ""
+        if not task:
+            fc_ok = "✅ Web search aktif" if self.agen_module.has_firecrawl() else "⚠️ Firecrawl belum dikonfigurasi (hanya analisis AI)"
+            await update.message.reply_text(
+                "🤖 *Agen Otonom*\n"
+                f"_{fc_ok}_\n\n"
+                "Berikan tugas kompleks yang memerlukan riset dan analisis multi-langkah.\n\n"
+                "✅ *Contoh:*\n"
+                "• `/agen Riset AI tools terbaik 2025 untuk startup Indonesia`\n"
+                "• `/agen Bandingkan GPT-4o vs Gemini 2.5 Pro untuk use case dokumen`\n"
+                "• `/agen Buat strategi konten LinkedIn untuk perusahaan AI B2B`\n"
+                "• `/agen Analisis tren adopsi AI di industri kesehatan Indonesia`",
+                parse_mode="Markdown",
+            )
+            return
+
+        router = await self._ensure_model_router(user_id)
+        msg = await update.message.reply_text(
+            f"🤖 *Agen Otonom*\n\n📋 Tugas: `{task[:100]}`\n\n⏳ Membuat rencana...",
+            parse_mode="Markdown",
+        )
+
+        async def on_progress(t: str):
+            try: await msg.edit_text(t, parse_mode="Markdown")
+            except Exception: pass
+
+        try:
+            result = await self.agen_module.run(task, router, on_progress=on_progress)
+            await msg.delete()
+            await self._send_long(update, result)
+        except Exception as e:
+            logger.exception("Agen error: %s", e)
+            await msg.edit_text(f"❌ Agen gagal menyelesaikan tugas:\n{e}")
 
     async def gambar(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
@@ -2011,6 +2215,11 @@ SELESAI"""
         app.add_handler(CommandHandler("run", self.code_cmd))
         app.add_handler(CommandHandler("perbaiki", self.perbaiki_cmd))
         app.add_handler(CommandHandler("improve", self.perbaiki_cmd))
+        app.add_handler(CommandHandler("karir", self.karir))
+        app.add_handler(CommandHandler("career", self.karir))
+        app.add_handler(CommandHandler("kerja", self.karir))
+        app.add_handler(CommandHandler("agen", self.agen_cmd))
+        app.add_handler(CommandHandler("agent", self.agen_cmd))
 
         app.add_handler(CallbackQueryHandler(self.provider_callback, pattern="^provider_"))
         app.add_handler(CallbackQueryHandler(self.orgroup_callback, pattern="^orgroup_"))
@@ -2018,6 +2227,7 @@ SELESAI"""
         app.add_handler(CallbackQueryHandler(self.model_callback, pattern="^model_"))
         app.add_handler(CallbackQueryHandler(self.img_model_callback, pattern="^img_"))
         app.add_handler(CallbackQueryHandler(self.email_callback, pattern="^email_"))
+        app.add_handler(CallbackQueryHandler(self.karir_callback, pattern="^karir_"))
         # surat_callback hanya untuk aksi akhir (download/email/batal)
         app.add_handler(CallbackQueryHandler(self.improve_callback, pattern="^improve_"))
         app.add_handler(CallbackQueryHandler(self.surat_callback, pattern="^surat_(download|email|batal)$"))
