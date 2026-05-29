@@ -73,8 +73,31 @@ def _acquire_single_instance_lock(lock_path: Path) -> int | None:
     return None
 
 
+def _syntax_check():
+    """Cek syntax semua file kritis sebelum bot start."""
+    import ast as _ast
+    critical_files = [
+        "src/gateway/telegram_handler.py",
+        "src/agent/core.py",
+        "src/modules/hermes/handler.py",
+    ]
+    base = Path(__file__).parent.parent
+    for rel in critical_files:
+        fp = base / rel
+        if fp.exists():
+            try:
+                _ast.parse(fp.read_text(encoding="utf-8"), filename=str(fp))
+            except SyntaxError as e:
+                raise RuntimeError(
+                    f"❌ SYNTAX ERROR di {rel} line {e.lineno}: {e.msg}\n"
+                    f"   Bot tidak bisa start! Perbaiki error tersebut dahulu."
+                ) from e
+    logger.info("Syntax check: semua file kritis OK ✅")
+
+
 async def main():
     ensure_directories()
+    _syntax_check()
 
     lock_path = Path(settings.database_path).parent / "telegram_bot.lock"
     lock_fd: int | None = None
