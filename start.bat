@@ -69,44 +69,24 @@ call :ENSURE_VENV
 echo [OK] Venv : %~dp0.venv311\Scripts\python.exe
 echo.
 echo [INFO] Bot berjalan... Tekan Ctrl+C untuk menghentikan.
-echo [INFO] Auto-restart aktif. Bot akan restart otomatis jika crash.
 echo =========================================================
 echo.
 
-:BOT_LOOP
 "%~dp0.venv311\Scripts\python.exe" run.py
 set "EXIT_CODE=!ERRORLEVEL!"
 
 echo.
 echo =========================================================
-
-REM --- Exit code 0 = berhenti normal (Ctrl+C atau perintah stop) ---
 if "!EXIT_CODE!"=="0" (
-  echo [INFO] Bot berhenti normal.
-  echo =========================================================
-  echo.
-  pause
-  goto MENU
+  echo [INFO] Bot berhenti normal (exit code 0).
+) else (
+  echo [ERROR] Bot berhenti dengan exit code !EXIT_CODE!
+  echo         Lihat pesan error di atas untuk detail.
 )
-
-REM --- Exit code 42 = restart diminta dari bot (contoh: /perbaiki) ---
-if "!EXIT_CODE!"=="42" (
-  echo [INFO] Bot meminta restart... memulai ulang dalam 3 detik.
-  echo =========================================================
-  if exist "%~dp0data\telegram_bot.lock" del "%~dp0data\telegram_bot.lock" >nul 2>&1
-  timeout /t 3 /nobreak >nul
-  echo.
-  goto BOT_LOOP
-)
-
-REM --- Exit code lain = crash — restart otomatis setelah 10 detik ---
-echo [ERROR] Bot crash (exit code !EXIT_CODE!).
-echo         Restart otomatis dalam 10 detik... Tekan Ctrl+C untuk batal.
 echo =========================================================
-if exist "%~dp0data\telegram_bot.lock" del "%~dp0data\telegram_bot.lock" >nul 2>&1
-timeout /t 10 /nobreak >nul
 echo.
-goto BOT_LOOP
+pause
+goto MENU
 
 :CHECK_LOCK
 set "LOCK_CONFLICT=0"
