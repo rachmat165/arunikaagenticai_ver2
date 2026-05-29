@@ -8,6 +8,7 @@ from src.config import settings
 from src.modules.rnd import RndHandler
 from src.modules.karir import KarirHandler
 from src.modules.agen import AgenHandler
+from src.modules.hermes import HermesHandler
 from src.tools.email_sender import send_email, test_smtp_connection
 from src.tools.surat_generator import SuratGenerator
 from src.tools.code_executor import execute_python, apply_improvement, restart_bot
@@ -26,6 +27,7 @@ class TelegramGateway:
         self.rnd_module = RndHandler()
         self.karir_module = KarirHandler()
         self.agen_module = AgenHandler()
+        self.hermes = HermesHandler()
         self.surat_gen = SuratGenerator(settings.output_dir)
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -673,9 +675,14 @@ metadata:
             "    ├ Evaluasi Lowongan (A-F scoring — Career-Ops)\n"
             "    ├ Buat CV Profesional (ATS-optimized)\n"
             "    ├ Riset Perusahaan (untuk interview)\n"
-            "    └ Evolusi Bot (analisis & saran perbaikan — Hermes)\n"
+            "    └ Evolusi Bot (analisis & saran perbaikan)\n"
             "  /agen — Agen Otonom multi-step (CowAgent)\n"
-            "    └ Kirim tugas kompleks → AI plan & execute otomatis\n\n"
+            "    └ Kirim tugas kompleks → AI plan & execute otomatis\n"
+            "  /h atau /hermes — Hermes Agent (NousResearch)\n"
+            "    ├ Tool calling native: web search, file ops, Python\n"
+            "    ├ Buat & simpan skill baru secara mandiri\n"
+            "    └ Memori permanen antar sesi\n"
+            "  /recall — Cari percakapan lama (/recall <kata kunci>)\n\n"
             "💬 *CHAT BEBAS*\n"
             "  Ketik pesan apapun → dijawab oleh AI\n"
             "  Konteks percakapan tersimpan otomatis\n"
@@ -798,6 +805,77 @@ metadata:
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await update.message.reply_text("Modul Automation:", reply_markup=reply_markup)
+
+    # ──────────────────────────────────────────────────────────────────────
+    # HERMES AGENT  (/h) — NousResearch/hermes-agent tool-calling loop
+    # ──────────────────────────────────────────────────────────────────────
+
+    async def hermes_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user_id = update.effective_user.id
+        if not await check_user_allowed(user_id):
+            return
+        if not update.message:
+            return
+
+        task = " ".join(context.args).strip() if context.args else ""
+        if not task:
+            await update.message.reply_text(
+                "🔮 *Hermes Agent* — Agen otonom dengan tool calling\n\n"
+                "Hermes dapat menggunakan tools secara mandiri:\n"
+                "🌐 web_search · 📂 read_file · 💾 write_file\n"
+                "🧠 remember · 🐍 run_python · ⚡ create_skill\n\n"
+                "✅ *Contoh:*\n"
+                "• `/h Riset dan simpan ke file: tren AI Indonesia 2025`\n"
+                "• `/h Baca src/config.py dan jelaskan strukturnya`\n"
+                "• `/h Buat skill baru untuk membuat ringkasan meeting`\n"
+                "• `/h Cari harga GPU terbaru lalu hitung estimasi budget training`\n\n"
+                "Berbeda dengan /agen — Hermes menggunakan *tool calling native* "
+                "dan bisa membuat skill baru secara mandiri.",
+                parse_mode="Markdown",
+            )
+            return
+
+        router = await self._ensure_model_router(user_id)
+        msg = await update.message.reply_text(
+            f"🔮 *Hermes Agent*\n\n📋 Tugas: `{task[:100]}`\n\n⚡ Memulai...",
+            parse_mode="Markdown",
+        )
+
+        async def on_progress(t: str):
+            try: await msg.edit_text(t, parse_mode="Markdown")
+            except Exception: pass
+
+        try:
+            result = await self.hermes.run(task, router, on_progress=on_progress, user_id=user_id)
+            await msg.delete()
+            await self._send_long(update, result)
+        except Exception as e:
+            logger.exception("Hermes error: %s", e)
+            await msg.edit_text(
+                f"❌ Hermes gagal:\n`{e}`\n\n"
+                f"💡 Tip: model yang dipilih mungkin tidak mendukung tool calling. "
+                f"Coba ganti ke Claude atau GPT-4o via /settings.",
+                parse_mode="Markdown",
+            )
+
+    async def recall_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user_id = update.effective_user.id
+        if not await check_user_allowed(user_id):
+            return
+        if not update.message:
+            return
+
+        query = " ".join(context.args).strip() if context.args else ""
+        if not query:
+            await update.message.reply_text(
+                "🔍 *Recall Memory*\n\nCari percakapan lama:\n`/recall <kata kunci>`\n\n"
+                "_Contoh: /recall surat penawaran_",
+                parse_mode="Markdown",
+            )
+            return
+
+        result = await self.hermes.recall(query, self.db_path, user_id)
+        await update.message.reply_text(result, parse_mode="Markdown")
 
     # ──────────────────────────────────────────────────────────────────────
     # KARIR  (/karir) — Career-Ops methodology
@@ -2220,6 +2298,10 @@ SELESAI"""
         app.add_handler(CommandHandler("kerja", self.karir))
         app.add_handler(CommandHandler("agen", self.agen_cmd))
         app.add_handler(CommandHandler("agent", self.agen_cmd))
+        app.add_handler(CommandHandler("h", self.hermes_cmd))
+        app.add_handler(CommandHandler("hermes", self.hermes_cmd))
+        app.add_handler(CommandHandler("recall", self.recall_cmd))
+        app.add_handler(CommandHandler("ingat", self.recall_cmd))
 
         app.add_handler(CallbackQueryHandler(self.provider_callback, pattern="^provider_"))
         app.add_handler(CallbackQueryHandler(self.orgroup_callback, pattern="^orgroup_"))
