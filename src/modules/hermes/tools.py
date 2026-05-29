@@ -147,13 +147,13 @@ class ToolExecutor:
             if settings.firecrawl_api_key else None
         )
 
-    async def execute(self, tool_name: str, tool_input: dict) -> str:
+    async def execute(self, tool_name: str, tool_input: dict, router=None) -> str:
         """Eksekusi satu tool call. Return string hasil."""
         try:
             if tool_name == "web_search":
                 return await self._web_search(**tool_input)
             elif tool_name == "read_file":
-                return self._read_file(**tool_input)
+                return await self._read_file_async(router=router, **tool_input)
             elif tool_name == "write_file":
                 return self._write_file(**tool_input)
             elif tool_name == "remember":
@@ -241,6 +241,129 @@ class ToolExecutor:
             f"📄 **{fname}** ({ext.upper()}, {pages} halaman, {len(text):,} karakter)\n"
             f"Path: `{file_path}`\n\n"
             f"---\n{text}"
+        )
+
+    async def _read_file_async(self, path: str, router=None) -> str:
+        """Wrapper async untuk _read_file — otomatis fallback ke Vision jika PDF scan."""
+        import asyncio
+
+        # Resolve path
+        file_path = Path(path)
+        if not file_path.is_absolute():
+            if len(path) >= 3 and path[1] == ":" and path[2] in ("/", "\\"):
+                file_path = Path(path)
+            else:
+                file_path = PROJECT_ROOT / path.lstrip("/").lstrip("\\")
+
+        if not file_path.exists():
+            return (
+                f"❌ File tidak ditemukan: `{path}`\n"
+                f"Path yang dicoba: `{file_path}`"
+            )
+
+        ext = file_path.suffix.lower()
+        from src.tools.file_reader import SUPPORTED_PDF, SUPPORTED_IMG
+
+        # Gambar → arahkan ke vision
+        if ext in SUPPORTED_IMG:
+            return (
+                f"📸 File `{file_path.name}` adalah gambar ({ext.upper()}).\n"
+                "Kirim file ini langsung ke chat Telegram sebagai foto/file "
+                "agar dianalisis dengan Vision AI."
+            )
+
+        # PDF → coba ekstrak teks, fallback ke Vision jika scan
+        if ext in SUPPORTED_PDF:
+            from src.tools.file_reader import _read_pdf
+            result = await asyncio.to_thread(_read_pdf, str(file_path))
+            if "error" in result:
+                err = result["error"]
+                # Deteksi PDF scan → gunakan Vision AI
+                if ("scan" in err.lower() or "gambar" in err.lower()
+                        or "tidak mengandung teks" in err.lower()):
+                    if router:
+                        return await self._read_pdf_via_vision(file_path, router)
+                    return (
+                        f"⚠️ PDF ini adalah scan/gambar.\n"
+                        f"Gunakan `/h` dengan model yang mendukung Vision "
+                        f"(Claude atau GPT-4o) agar bot bisa membacanya."
+                    )
+                return f"❌ {err}"
+            pages = result.get("pages", 1)
+            text  = result.get("text", "")
+            return (
+                f"📄 **{file_path.name}** (PDF, {pages} hal, {len(text):,} kar)\n"
+                f"Path: `{file_path}`\n\n---\n{text}"
+            )
+
+        # Format lain — gunakan _read_file sync
+        return await asyncio.to_thread(self._read_file, path)
+
+    async def _read_pdf_via_vision(self, file_path: Path, router) -> str:
+        """Render halaman PDF scan sebagai gambar → analisis tiap halaman via Vision AI."""
+        import base64
+        import io
+        import asyncio
+
+        try:
+            import pypdfium2 as pdfium
+            from PIL import Image
+        except ImportError as e:
+            return f"❌ Library tidak tersedia untuk render PDF: {e}"
+
+        try:
+            def _render_pages():
+                pdf = pdfium.PdfDocument(str(file_path))
+                n_pages = len(pdf)
+                pages_b64 = []
+                for i in range(min(n_pages, 15)):   # maks 15 halaman
+                    page = pdf[i]
+                    bitmap = page.render(scale=150 / 72)   # 150 DPI
+                    pil_img = bitmap.to_pil()
+                    buf = io.BytesIO()
+                    pil_img.save(buf, format="JPEG", quality=80)
+                    pages_b64.append(base64.b64encode(buf.getvalue()).decode())
+                pdf.close()
+                return n_pages, pages_b64
+
+            n_pages, pages_b64 = await asyncio.to_thread(_render_pages)
+        except Exception as e:
+            return f"❌ Gagal render PDF: {e}"
+
+        analyses = []
+        for i, b64 in enumerate(pages_b64, 1):
+            vision_msg = {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {"type": "base64", "media_type": "image/jpeg", "data": b64},
+                    },
+                    {
+                        "type": "text",
+                        "text": (
+                            f"Ekstrak dan tulis ulang SEMUA teks dari halaman {i} PDF ini. "
+                            "Pertahankan heading, sub-heading, bullet point, dan tabel. "
+                            "Jangan skip konten apapun. Bahasa: ikuti bahasa dokumen."
+                        ),
+                    },
+                ],
+            }
+            try:
+                text, _ = await router.call(
+                    messages=[vision_msg],
+                    temperature=0.1,
+                    max_tokens=2048,
+                )
+                analyses.append(f"=== Halaman {i}/{n_pages} ===\n{text}")
+            except Exception as e:
+                analyses.append(f"=== Halaman {i}/{n_pages} === [Vision error: {e}]")
+
+        combined = "\n\n".join(analyses)
+        return (
+            f"📄 **{file_path.name}** (PDF scan, {n_pages} hal — dibaca via Vision AI)\n"
+            f"Diekstrak: {len(pages_b64)} dari {n_pages} halaman\n\n"
+            f"---\n{combined}"
         )
 
     def _write_file(self, path: str, content: str) -> str:

@@ -147,7 +147,7 @@ class HermesHandler:
                         f"`{name}({json.dumps(inp, ensure_ascii=False)[:80]})`"
                     )
 
-                tool_result = await self.executor.execute(name, inp)
+                tool_result = await self.executor.execute(name, inp, router=router)
                 tool_summary_parts.append(f"**{name}**: {tool_result[:200]}")
 
                 # Masukkan hasil tool ke messages (format sesuai provider)
