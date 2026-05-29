@@ -27,6 +27,24 @@ def _model_display(provider: str, model_name: str) -> str:
     return f"{model_name} (lokal)"
 
 
+def _load_claude_skills_summary() -> str:
+    """Baca ringkasan Claude Skills yang terinstall (hanya untuk Claude provider)."""
+    from pathlib import Path as _Path
+    claude_root = _Path(__file__).parent.parent.parent / "data" / "claude_skills"
+    if not claude_root.exists():
+        return ""
+    domains = []
+    for domain_dir in sorted(claude_root.iterdir()):
+        if domain_dir.is_dir():
+            skills = [f.stem for f in domain_dir.glob("*.md")]
+            if skills:
+                domains.append(f"  • {domain_dir.name}: {', '.join(skills[:5])}"
+                               + (f" +{len(skills)-5} lainnya" if len(skills) > 5 else ""))
+    if not domains:
+        return ""
+    return "\n🎓 CLAUDE SKILLS AKTIF:\n" + "\n".join(domains[:8])
+
+
 def build_system_prompt(provider: str, model_name: str) -> str:
     now = datetime.now()
     tanggal = f"{now.day} {BULAN_ID[now.month]} {now.year}"
@@ -127,7 +145,7 @@ PANDUAN RESPONS
 - Bahasa Indonesia yang ramah dan profesional
 - Panggil user dengan "Pak/Bu" + nama jika diketahui
 - Selalu actionable: arahkan ke perintah konkret
-- Jika ada pertanyaan model/identitas → jawab berdasarkan info di atas"""
+- Jika ada pertanyaan model/identitas → jawab berdasarkan info di atas{_load_claude_skills_summary() if provider == "anthropic" else ""}"""
 
 
 class ATGAgent:

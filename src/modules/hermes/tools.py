@@ -498,10 +498,17 @@ def load_memory() -> str:
 
 
 def load_skills_context() -> str:
-    """Baca semua skill yang tersedia — dari local (data/skills/) dan Hermes (data/hermes_skills/)."""
+    """
+    Baca semua skill yang tersedia:
+      - data/skills/          → skill lokal buatan bot
+      - data/hermes_skills/   → skill dari NousResearch/hermes-agent
+      - data/claude_skills/   → skill dari alirezarezvani/claude-skills (338 skill)
+    """
     skills = []
+
+    # Local & Hermes skills (flat directories)
     for skills_dir, label in [
-        (PROJECT_ROOT / "data" / "skills", "Local"),
+        (PROJECT_ROOT / "data" / "skills",       "Local"),
         (PROJECT_ROOT / "data" / "hermes_skills", "Hermes"),
     ]:
         if not skills_dir.exists():
@@ -509,7 +516,24 @@ def load_skills_context() -> str:
         for f in sorted(skills_dir.glob("*.md")):
             try:
                 content = f.read_text(encoding="utf-8")
-                skills.append(f"--- Skill [{label}]: {f.stem} ---\n{content[:1500]}")
+                skills.append(f"--- Skill [{label}]: {f.stem} ---\n{content[:1200]}")
             except Exception:
                 pass
+
+    # Claude skills (subdirectories per domain)
+    claude_root = PROJECT_ROOT / "data" / "claude_skills"
+    if claude_root.exists():
+        for domain_dir in sorted(claude_root.iterdir()):
+            if not domain_dir.is_dir():
+                continue
+            for f in sorted(domain_dir.glob("*.md")):
+                try:
+                    content = f.read_text(encoding="utf-8")
+                    # Hanya ambil 800 char per skill agar tidak terlalu panjang
+                    skills.append(
+                        f"--- Claude Skill [{domain_dir.name}]: {f.stem} ---\n{content[:800]}"
+                    )
+                except Exception:
+                    pass
+
     return "\n\n".join(skills)

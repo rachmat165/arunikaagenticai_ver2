@@ -24,16 +24,18 @@ echo  2. Update Aplikasi (GitHub + Python packages)
 echo  3. Setup Model AI
 echo  4. Hapus lock file (jika bot stuck)
 echo  5. Update Hermes Agent (cek release terbaru)
+echo  6. Update Claude Skills (alirezarezvani/claude-skills)
 echo  0. Keluar
 echo =========================================================
 echo.
-set /p CHOICE="Pilih menu [0-5]: "
+set /p CHOICE="Pilih menu [0-6]: "
 
 if "%CHOICE%"=="1" goto START_BOT
 if "%CHOICE%"=="2" goto UPDATE_MAIN
 if "%CHOICE%"=="3" goto SETUP_MODEL
 if "%CHOICE%"=="4" goto CLEAR_LOCK
 if "%CHOICE%"=="5" goto UPDATE_HERMES
+if "%CHOICE%"=="6" goto UPDATE_CLAUDE_SKILLS
 if "%CHOICE%"=="0" goto EXIT
 echo [!] Pilihan tidak valid
 timeout /t 1 >nul
@@ -236,6 +238,38 @@ echo.
 
 REM --- Jalankan update script ---
 "%~dp0.venv311\Scripts\python.exe" "%~dp0scripts\update_hermes.py"
+
+goto MENU
+
+:UPDATE_CLAUDE_SKILLS
+cls
+echo =========================================================
+echo  [INFO] Update Claude Skills
+echo  Sumber: github.com/alirezarezvani/claude-skills
+echo  338 skill di 16 domain untuk model Claude
+echo =========================================================
+echo.
+
+call :FIND_PYTHON
+if "!PYTHON_EXE!"=="" (
+  echo [ERROR] Python tidak ditemukan. Jalankan menu 2 terlebih dahulu.
+  pause
+  goto MENU
+)
+call :ENSURE_VENV
+
+echo [INFO] Memeriksa koneksi internet...
+ping -n 1 api.github.com >nul 2>&1
+if errorlevel 1 (
+  echo [ERROR] Tidak dapat terhubung ke api.github.com
+  echo         Periksa koneksi internet Anda.
+  pause
+  goto MENU
+)
+echo [OK] Koneksi internet tersedia.
+echo.
+
+"%~dp0.venv311\Scripts\python.exe" "%~dp0scripts\update_claude_skills.py"
 
 goto MENU
 
