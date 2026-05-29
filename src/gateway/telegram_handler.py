@@ -18,6 +18,7 @@ from src.tools.file_reader import extract_text, is_image, is_supported
 from src.tools.general_pdf import generate_document_pdf_async
 import aiosqlite
 import logging
+import asyncio
 from datetime import datetime as _dt
 
 logger = logging.getLogger(__name__)
@@ -88,6 +89,61 @@ class TelegramGateway:
         if presentation_skills:
             return f"🎓 _Claude Skills siap membantu: {', '.join(presentation_skills[:5])}_"
         return "🎓 _Claude Skills akan otomatis digunakan untuk membuat presentasi profesional._"
+
+    async def _generate_surat_with_hermes(
+        self,
+        source_result: str,
+        source_title: str,
+        template_type: str,
+        user_id: int,
+        on_progress=None
+    ) -> str:
+        """Generate surat profesional dengan Hermes Agent + Claude Skills."""
+        template_instructions = {
+            "proposal": "Buat surat proposal kerjasama yang profesional dan persuasif.",
+            "offering": "Buat surat penawaran produk/layanan dengan detail harga dan benefit.",
+            "request": "Buat surat permohonan atau undangan yang formal dan sopan.",
+            "all": "Buat 3 versi surat: (1) Proposal, (2) Offering, (3) Request dari data ini.",
+        }
+
+        prompt = f"""Generate surat profesional dengan template {template_type.upper()}:
+
+{template_instructions.get(template_type, "")}
+
+SUMBER DATA:
+{source_result}
+
+JUDUL: {source_title}
+
+INSTRUKSI:
+1. Analisis data sumber dan ekstrak poin-poin penting
+2. Generate surat dengan struktur profesional:
+   - Pembuka (salam + maksud surat)
+   - Isi (poin utama, detail, benefit)
+   - Penutup (call-to-action, tanda tangan)
+3. Gunakan nada formal namun human-friendly
+4. Format dengan ATG branding
+5. Jika template='all', pisahkan 3 surat dengan header jelas
+
+OUTPUT: Hanya surat jadi (tanpa penjelasan tambahan)."""
+
+        try:
+            router = await self._ensure_model_router(user_id)
+
+            async def progress_callback(msg: str):
+                if on_progress:
+                    await on_progress(f"🎯 {msg}")
+
+            result = await self.hermes.run(
+                task=prompt,
+                router=router,
+                on_progress=progress_callback,
+                user_id=user_id,
+            )
+            return result
+        except Exception as e:
+            logger.exception("Hermes surat generation error: %s", e)
+            raise RuntimeError(f"Gagal generate surat: {e}")
 
     async def show_result_with_export(
         self,
@@ -486,6 +542,18 @@ Ketik pertanyaan bebas kapan saja! 🤖"""
         surat_state = (context.user_data or {}).get("surat_state")
         if surat_state:
             await self._handle_surat_state(update, context, surat_state, user_message)
+            return
+
+        # ── Smart Surat Generator state machine ────────────────────────────
+        surat_gen_state = (context.user_data or {}).get("surat_gen_state")
+        if surat_gen_state:
+            await self._handle_surat_gen_state(update, context, surat_gen_state, user_message)
+            return
+
+        # ── Surat Email state machine ──────────────────────────────────────
+        surat_email_state = (context.user_data or {}).get("surat_email_state")
+        if surat_email_state:
+            await self._handle_surat_email_state(update, context, surat_email_state, user_message)
             return
 
         # ── Email state machine ────────────────────────────────────────────
@@ -2302,6 +2370,155 @@ Format output sebagai markdown yang rapi dan actionable untuk presentasi profesi
                 )
                 ud["presentasi_state"] = None
 
+    async def _handle_surat_gen_state(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+        surat_gen_state: str,
+        user_message: str,
+    ):
+        """Handle state machine untuk Smart Surat Generator (edit & email)."""
+        msg = update.message
+        if not msg or context.user_data is None:
+            return
+
+        ud = context.user_data
+        surat_gen = ud.get("surat_generated", {})
+
+        if surat_gen_state == "editing":
+            # User masukkan editan untuk surat
+            ud["surat_gen_state"] = None
+            original_content = surat_gen.get("content", "")
+
+            # Generate ulang surat dengan editan user
+            source_result = ud.get("surat_source_result", "")
+            template_type = ud.get("surat_template_type", "proposal")
+            user_id = update.effective_user.id if update.effective_user else 0
+
+            await msg.chat.send_action("typing")
+            status = await msg.reply_text("🔄 Claude sedang merevisi surat berdasarkan masukan Anda...")
+
+            try:
+                router = await self._ensure_model_router(user_id)
+
+                async def progress_callback(text: str):
+                    try:
+                        await status.edit_text(f"🔄 {text}")
+                    except Exception:
+                        pass
+
+                prompt = f"""Revisi surat berikut berdasarkan masukan user.
+
+SURAT ORIGINAL:
+{original_content}
+
+MASUKAN USER:
+{user_message}
+
+INSTRUKSI:
+1. Terapkan semua masukan user pada surat
+2. Pertahankan struktur dan format profesional
+3. Jangan ubah tujuan surat, hanya detail/konten
+4. Kirim hanya surat yang sudah direvisi (tanpa penjelasan)"""
+
+                result = await self.hermes.run(
+                    task=prompt,
+                    router=router,
+                    on_progress=progress_callback,
+                    user_id=user_id,
+                )
+
+                surat_gen["content"] = result
+                ud["surat_generated"] = surat_gen
+                await status.delete()
+
+                # Tampilkan surat yang sudah direvisi dengan opsi download/edit
+                keyboard = [
+                    [InlineKeyboardButton("📥 Download PDF", callback_data="surat_dl_pdf"),
+                     InlineKeyboardButton("📝 Edit Lagi", callback_data="surat_edit")],
+                    [InlineKeyboardButton("💾 Kirim Email", callback_data="surat_send_email"),
+                     InlineKeyboardButton("❌ Batal", callback_data="surat_cancel")],
+                ]
+
+                preview = (result[:1500] + "\n\n...[terpotong]") if len(result) > 1500 else result
+                await msg.reply_text(
+                    f"✅ *Surat Direvisi*\n\n"
+                    f"```\n{preview}\n```",
+                    reply_markup=InlineKeyboardMarkup(keyboard),
+                    parse_mode="Markdown",
+                )
+            except Exception as e:
+                logger.exception("Surat revision error: %s", e)
+                await status.edit_text(f"❌ Gagal merevisi surat: {e}", parse_mode="Markdown")
+
+    async def _handle_surat_email_state(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+        surat_email_state: str,
+        user_message: str,
+    ):
+        """Handle email sending untuk Smart Surat Generator."""
+        msg = update.message
+        if not msg or context.user_data is None:
+            return
+
+        ud = context.user_data
+        surat_gen = ud.get("surat_generated", {})
+
+        if surat_email_state == "email_to":
+            ud["surat_email_state"] = None
+            to_email = user_message.strip()
+
+            if not to_email or "@" not in to_email:
+                await msg.reply_text(
+                    "❌ Format email tidak valid. Silakan coba lagi dengan format: nama@domain.com"
+                )
+                return
+
+            await msg.chat.send_action("typing")
+            status = await msg.reply_text("📧 Membuat PDF dan mengirim email...")
+
+            try:
+                # Generate PDF
+                perihal = surat_gen.get("template", "Surat").upper()
+                pdf_path = self.surat_gen.generate_pdf(
+                    perihal=perihal,
+                    isi=surat_gen.get("content", ""),
+                )
+
+                # Gunakan email sender untuk kirim surat
+                result = await send_email(
+                    to=to_email,
+                    subject=f"Surat {perihal} — PT. Arunika Teknologi Global",
+                    body=f"Berikut adalah surat {perihal.lower()} yang diminta.\n\nDikutrimkan via PT. Arunika Teknologi Global.",
+                    attachment_path=pdf_path,
+                )
+
+                await status.delete()
+
+                if "error" in result:
+                    await msg.reply_text(
+                        f"❌ Gagal mengirim email: {result['error']}",
+                        parse_mode="Markdown"
+                    )
+                else:
+                    await msg.reply_text(
+                        f"✅ *Email Terkirim!*\n\n"
+                        f"📧 Kepada: `{to_email}`\n"
+                        f"📄 File: Surat_{perihal}.pdf\n\n"
+                        "Surat profesional dengan letterhead ATG telah dikirimkan.",
+                        parse_mode="Markdown"
+                    )
+                    # Cleanup
+                    ud.pop("surat_source_result", None)
+                    ud.pop("surat_generated", None)
+                    ud.pop("surat_template_type", None)
+
+            except Exception as e:
+                logger.exception("Surat email error: %s", e)
+                await status.edit_text(f"❌ Gagal mengirim email: {e}", parse_mode="Markdown")
+
     async def _show_surat_preview(
         self,
         update: Update,
@@ -2793,6 +3010,129 @@ Format output sebagai markdown yang rapi dan actionable untuk presentasi profesi
             context.user_data.pop("presentasi_state", None)
             await query.edit_message_text("❌ Pembuatan presentasi dibatalkan.")
 
+        # ── Smart Surat Generator (dari Quick Export) ──────────────────────────
+        elif callback_data.startswith("surat_tpl_"):
+            if not query or not context.user_data or not update.effective_user:
+                return
+
+            user_id = update.effective_user.id
+            template_type = callback_data.split("_")[2]  # proposal, offering, request, all
+            source_result = context.user_data.get("surat_source_result", "")
+            source_title = context.user_data.get("surat_source_title", "Hasil Riset")
+
+            if not source_result:
+                await query.edit_message_text("❌ Hasil sumber tidak ditemukan.")
+                return
+
+            context.user_data["surat_template_type"] = template_type
+            context.user_data["surat_gen_state"] = "generating"
+
+            await query.edit_message_text(
+                f"🎯 *Generate Surat Template:* {template_type.upper()}\n\n"
+                "⏳ Claude sedang membuat surat dengan Hermes Agent + Claude Skills...",
+                parse_mode="Markdown",
+            )
+
+            try:
+                async def on_progress_surat(text: str):
+                    try:
+                        await query.edit_message_text(text, parse_mode="Markdown")
+                    except Exception:
+                        pass
+
+                surat_content = await self._generate_surat_with_hermes(
+                    source_result=source_result,
+                    source_title=source_title,
+                    template_type=template_type,
+                    user_id=user_id,
+                    on_progress=on_progress_surat
+                )
+
+                context.user_data["surat_generated"] = {
+                    "template": template_type,
+                    "content": surat_content,
+                    "source": source_title,
+                    "timestamp": _dt.now().isoformat(),
+                }
+
+                # Display surat preview dengan opsi download/edit
+                keyboard = [
+                    [InlineKeyboardButton("📥 Download PDF", callback_data="surat_dl_pdf"),
+                     InlineKeyboardButton("📝 Edit", callback_data="surat_edit")],
+                    [InlineKeyboardButton("💾 Kirim Email", callback_data="surat_send_email"),
+                     InlineKeyboardButton("❌ Batal", callback_data="surat_cancel")],
+                ]
+
+                preview = (surat_content[:2000] + "\n\n...[terpotong]") if len(surat_content) > 2000 else surat_content
+                await query.edit_message_text(
+                    f"✅ *Surat Generate:* {template_type.upper()}\n\n"
+                    f"📋 *Sumber:* _{source_title}_\n\n"
+                    f"```\n{preview}\n```",
+                    reply_markup=InlineKeyboardMarkup(keyboard),
+                    parse_mode="Markdown",
+                )
+            except Exception as e:
+                logger.exception("Surat generation error: %s", e)
+                await query.edit_message_text(f"❌ Gagal generate surat: {e}", parse_mode="Markdown")
+
+        elif callback_data.startswith("surat_"):
+            if callback_data == "surat_dl_pdf":
+                surat_gen = context.user_data.get("surat_generated", {})
+                if not surat_gen:
+                    await query.edit_message_text("❌ Data surat tidak ditemukan.")
+                    return
+
+                await query.edit_message_text("📄 Membuat PDF dengan letterhead ATG...", parse_mode="Markdown")
+                try:
+                    perihal = surat_gen.get("template", "Surat").upper()
+                    pdf_path = self.surat_gen.generate_pdf(
+                        perihal=perihal,
+                        isi=surat_gen.get("content", ""),
+                    )
+
+                    if query.message and query.message.chat:
+                        with open(pdf_path, "rb") as f:
+                            await query.message.chat.send_document(
+                                document=f,
+                                filename=f"surat_{surat_gen.get('template')}.pdf",
+                                caption=f"📄 Surat {perihal} — PT. Arunika",
+                            )
+                    await query.delete_message()
+                except Exception as e:
+                    logger.exception("PDF generation error: %s", e)
+                    await query.edit_message_text(f"❌ Gagal membuat PDF: {e}", parse_mode="Markdown")
+
+            elif callback_data == "surat_edit":
+                context.user_data["surat_gen_state"] = "editing"
+                await query.edit_message_text(
+                    "✏️ *Edit Surat*\n\n"
+                    "Masukkan perubahan atau penambahan untuk surat:\n"
+                    "(Contoh: Ubah nama PT, tambah CC, dll)",
+                    parse_mode="Markdown",
+                )
+
+            elif callback_data == "surat_send_email":
+                surat_gen = context.user_data.get("surat_generated", {})
+                if not surat_gen:
+                    await query.edit_message_text("❌ Data surat tidak ditemukan.")
+                    return
+
+                context.user_data["surat_email_state"] = "email_to"
+                await query.edit_message_text(
+                    "📧 *Kirim Surat via Email*\n\n"
+                    "Masukkan alamat email penerima surat:\n"
+                    "_(Contoh: nama@perusahaan.com)_",
+                    parse_mode="Markdown",
+                )
+
+            elif callback_data == "surat_cancel":
+                context.user_data.pop("surat_source_result", None)
+                context.user_data.pop("surat_source_title", None)
+                context.user_data.pop("surat_template_type", None)
+                context.user_data.pop("surat_generated", None)
+                context.user_data.pop("surat_gen_state", None)
+                await query.edit_message_text("❌ Pembuatan surat dibatalkan.")
+
         elif callback_data.startswith("sek_"):
             feature = callback_data.split("_")[1]
             await query.edit_message_text(f"⏳ Fitur sekretaris: {feature} akan segera diimplementasikan!")
@@ -2824,16 +3164,21 @@ Format output sebagai markdown yang rapi dan actionable untuk presentasi profesi
 
             if export_type == "surat":
                 if context.user_data is not None:
-                    context.user_data["surat_state"] = "surat_brief"
-                    context.user_data["surat_draft"] = {
-                        "isi": result_text,
-                        "perihal": f"Ringkasan {result_title}"
-                    }
+                    context.user_data["surat_source_result"] = result_text
+                    context.user_data["surat_source_title"] = result_title
+
+                keyboard = [
+                    [InlineKeyboardButton("📋 Proposal Kerjasama", callback_data="surat_tpl_proposal")],
+                    [InlineKeyboardButton("🎁 Penawaran Produk", callback_data="surat_tpl_offering")],
+                    [InlineKeyboardButton("📞 Permohonan/Undangan", callback_data="surat_tpl_request")],
+                    [InlineKeyboardButton("🎯 Generate Semua Template", callback_data="surat_tpl_all")],
+                ]
                 await query.edit_message_text(
-                    "📄 *Jadikan Surat Resmi*\n\n"
-                    "Hasil riset akan menjadi isi surat.\n"
-                    "Jelaskan tujuan surat:\n"
-                    "_Contoh: Surat penawaran kerjasama berdasarkan riset pasar_",
+                    "📄 *Jadikan Surat Resmi ATG*\n\n"
+                    "Pilih template surat yang akan dihasilkan dari riset/analisis ini:\n"
+                    f"📊 *Source:* _{result_title}_\n\n"
+                    "Claude akan generate surat profesional dengan Claude Skills...",
+                    reply_markup=InlineKeyboardMarkup(keyboard),
                     parse_mode="Markdown",
                 )
 
