@@ -1150,7 +1150,7 @@ Ketik pertanyaan bebas kapan saja! 🤖"""
             status = ant_data.get("key_status", "?")
             icon = "✅" if status == "aktif" else "❌"
             lines.append(f"  {icon} API Key: *{status}*")
-            lines.append(f"  🔗 Saldo: [console.anthropic.com](https://console.anthropic.com/settings/billing)")
+            lines.append(f"  🔗 Saldo: [platform.claude.com/billing](https://platform.claude.com/settings/billing)")
         lines.append("")
 
         # ── Penggunaan lokal (DB) ─────────────────────────────────────────
@@ -1214,7 +1214,7 @@ metadata:
 
 ## Anthropic
 - API Key   : {ant_status}
-- Saldo     : cek manual di console.anthropic.com/settings/billing
+- Saldo     : cek manual di platform.claude.com/settings/billing
 
 ## Penggunaan Bot (lokal DB)
 - Total request : {summary["total_calls"]}x
