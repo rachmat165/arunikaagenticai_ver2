@@ -109,6 +109,11 @@ async def main():
         async with app:
             # async with app only calls initialize()/shutdown(); we must call start()/stop() manually.
             await app.start()
+
+            # ── Start Agent24 setelah event loop aktif ─────────────────────────
+            gateway.start_agent24(app)
+            logger.info("Agent24 background task scheduler started")
+
             updater = app.updater
             assert updater is not None
             await updater.start_polling(allowed_updates=["message", "callback_query"])
@@ -119,6 +124,10 @@ async def main():
             except KeyboardInterrupt:
                 logger.info("Bot shutting down...")
             finally:
+                # ── Stop Agent24 gracefully ─────────────────────────────────
+                if gateway.agent24:
+                    gateway.agent24.stop()
+                    logger.info("Agent24 scheduler stopped")
                 await updater.stop()
                 await app.stop()
 

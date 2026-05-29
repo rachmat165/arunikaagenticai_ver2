@@ -30,29 +30,117 @@ class TelegramGateway:
         self.karir_module = KarirHandler()
         self.agen_module  = AgenHandler()
         self.hermes       = HermesHandler()
+        self.surat_gen    = SuratGenerator(settings.output_dir)
 
-        # ── 24/7 Agent Runner ────────────────────────────────────────────────
-        async def _agent_runner(user_id: int, task_desc: str) -> str:
-            router = await self._ensure_model_router(user_id)
-            from src.agent.letta_memory import LettaMemory
-            mem = LettaMemory(user_id, self.db_path)
-            result = await self.hermes.run(task_desc, router, user_id=user_id, memory=mem)
-            return result
-
-        async def _message_sender(chat_id: int, text: str):
-            from telegram import Bot
-            from src.config import settings as _s
-            bot = Bot(token=_s.telegram_bot_token)
-            for i in range(0, len(text), 4096):
-                await bot.send_message(chat_id=chat_id, text=text[i:i+4096], parse_mode="Markdown")
-
+        # ── 24/7 Agent Runner ─────────────────────────────────────────────────
+        # Diinisialisasi tapi belum distart; start() dipanggil dari main.py
+        # setelah event loop aktif
         self.agent24 = Agent24Runner(
-            db_path=self.db_path,
-            agent_runner=_agent_runner,
-            message_sender=_message_sender,
+            db_path=db_path,
+            agent_runner=self._agent_runner_callback,
+            message_sender=self._message_sender_callback,
         )
+
+    async def _agent_runner_callback(self, user_id: int, task_desc: str) -> str:
+        """Callback untuk Agent24 — jalankan tugas dengan AI Agent."""
+        try:
+            # Gunakan ATGAgent untuk menjalankan tugas
+            result = await self.agent.chat(
+                user_id=user_id,
+                user_message=f"Jalankan tugas ini: {task_desc}",
+            )
+            return str(result) if result else "Tugas selesai tanpa output."
+        except Exception as e:
+            logger.exception("Agent runner error: %s", e)
+            return f"Error menjalankan tugas: {e}"
+
+    async def _message_sender_callback(self, chat_id: int, text: str) -> None:
+        """Callback untuk Agent24 — kirim hasil ke Telegram chat."""
+        try:
+            # Kirim pesan ke chat yang ditentukan
+            if hasattr(self, '_app') and self._app:
+                await self._app.bot.send_message(chat_id=chat_id, text=text, parse_mode="Markdown")
+        except Exception as e:
+            logger.exception("Message sender error: %s", e)
+
+    def start_agent24(self, app):
+        """Start Agent24 runner. Panggil dari main.py setelah app.start()."""
+        self._app = app
         self.agent24.start()
-        self.surat_gen = SuratGenerator(settings.output_dir)
+        logger.info("Agent24 runner started successfully")
+
+    def _get_presentation_skill_hint(self) -> str:
+        """Ambil hint tentang Claude Skills untuk presentasi/PowerPoint."""
+        from pathlib import Path as _Path
+        skills_root = _Path(__file__).parent.parent.parent / "data" / "claude_skills"
+
+        # Cari skill yang relevan untuk presentasi/PowerPoint
+        presentation_skills = []
+        if skills_root.exists():
+            for domain_dir in skills_root.iterdir():
+                if domain_dir.is_dir():
+                    domain_name = domain_dir.name.lower()
+                    # Cari di domain seperti product-management, marketing, business
+                    if any(x in domain_name for x in ["product", "marketing", "business", "presentation"]):
+                        skills = [f.stem for f in domain_dir.glob("*.md")]
+                        presentation_skills.extend(skills[:3])
+
+        if presentation_skills:
+            return f"🎓 _Claude Skills siap membantu: {', '.join(presentation_skills[:5])}_"
+        return "🎓 _Claude Skills akan otomatis digunakan untuk membuat presentasi profesional._"
+
+    async def show_result_with_export(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+        result_text: str,
+        result_type: str = "general",  # research, analysis, rnd, hermes, karir, etc
+        title: str = None,
+    ):
+        """
+        Tampilkan hasil + menu konversi otomatis ke berbagai format.
+
+        result_type: 'research', 'analysis', 'rnd', 'hermes', 'karir', 'riset', etc
+        """
+        if not update.message:
+            return
+
+        # Simpan hasil terakhir untuk konversi
+        if context.user_data is None:
+            context.user_data = {}
+        context.user_data["last_result"] = {
+            "text": result_text,
+            "type": result_type,
+            "title": title if title else f"Hasil {result_type}",
+            "timestamp": _dt.now().isoformat(),
+        }
+
+        # Bagi hasil jika terlalu panjang
+        if len(result_text) > 4096:
+            for i in range(0, len(result_text), 4096):
+                await update.message.reply_text(result_text[i:i+4096], parse_mode="Markdown")
+        else:
+            await update.message.reply_text(result_text, parse_mode="Markdown")
+
+        # Tampilkan menu konversi
+        keyboard = [
+            [
+                InlineKeyboardButton("📄 Surat", callback_data="export_surat"),
+                InlineKeyboardButton("📊 PDF", callback_data="export_pdf"),
+            ],
+            [
+                InlineKeyboardButton("📈 Excel", callback_data="export_excel"),
+                InlineKeyboardButton("🎨 Presentasi", callback_data="export_presentasi"),
+            ],
+            [
+                InlineKeyboardButton("📱 Sosmed + Gambar", callback_data="export_sosmed"),
+            ],
+        ]
+        await update.message.reply_text(
+            "💾 *Konversi hasil ke format lain:*",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="Markdown",
+        )
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id if update.effective_user else None
@@ -386,6 +474,12 @@ Ketik pertanyaan bebas kapan saja! 🤖"""
                 context.user_data.pop("code_state", None)
             if update.message:
                 await self._run_and_reply(update.message, user_message)
+            return
+
+        # ── Presentasi state machine ──────────────────────────────────────
+        presentasi_state = (context.user_data or {}).get("presentasi_state")
+        if presentasi_state:
+            await self._handle_presentasi_state(update, context, presentasi_state, user_message)
             return
 
         # ── Surat state machine ────────────────────────────────────────────
@@ -2139,6 +2233,75 @@ SELESAI"""
                     parse_mode="Markdown",
                 )
 
+    async def _handle_presentasi_state(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+        presentasi_state: str,
+        user_message: str,
+    ):
+        """Handle presentation creation flow with Claude Skills."""
+        if not update.message or not context.user_data:
+            return
+        msg = update.message
+        ud = context.user_data
+        user_id = update.effective_user.id if update.effective_user else 0
+
+        if presentasi_state == "presentasi_topik":
+            ud["presentasi_state"] = None
+            ud["presentasi_draft"] = {"topik": user_message}
+
+            status = await msg.reply_text("⏳ Membuat outline presentasi dengan Claude Skills...")
+
+            try:
+                # Gunakan ATGAgent dengan system prompt yang include Claude Skills
+                # untuk membuat outline presentasi profesional
+                presentation_prompt = f"""Buatkan outline presentasi profesional (PowerPoint/slide):
+
+📊 *Topik:* {user_message}
+
+Berikan struktur slide yang jelas dengan:
+1. Slide title dan deskripsi singkat setiap slide
+2. Key points untuk setiap bagian
+3. Rekomendasi visual/content untuk PowerPoint
+4. Tips desain dan layout PowerPoint
+
+Format output sebagai markdown yang rapi dan actionable untuk presentasi profesional."""
+
+                # Chat dengan agent — Claude Skills akan diinject otomatis
+                result = await self.agent.chat(
+                    user_id=user_id,
+                    user_message=presentation_prompt,
+                )
+
+                outline = str(result) if result else "Gagal generate outline"
+                ud["presentasi_draft"]["outline"] = outline[:2000]  # simpan 2000 char pertama
+
+                keyboard = [
+                    [InlineKeyboardButton("✅ Terima", callback_data="presentasi_accept")],
+                    [InlineKeyboardButton("♻️ Buat Ulang", callback_data="presentasi_retry")],
+                    [InlineKeyboardButton("❌ Batal", callback_data="presentasi_cancel")],
+                ]
+
+                preview = outline[:500] + ("..." if len(outline) > 500 else "")
+                await status.edit_text(
+                    f"📊 *Outline Presentasi*\n\n"
+                    f"🎯 Topik: _{user_message}_\n\n"
+                    f"📝 *Preview:*\n{preview}\n\n"
+                    f"Pilih tindakan:",
+                    reply_markup=InlineKeyboardMarkup(keyboard),
+                    parse_mode="Markdown",
+                )
+
+            except Exception as e:
+                logger.exception("Presentasi generation error: %s", e)
+                await status.edit_text(
+                    f"❌ Gagal membuat outline:\n`{e}`\n\n"
+                    "Coba lagi dengan /sek",
+                    parse_mode="Markdown"
+                )
+                ud["presentasi_state"] = None
+
     async def _show_surat_preview(
         self,
         update: Update,
@@ -2575,6 +2738,61 @@ SELESAI"""
                 parse_mode="Markdown",
             )
 
+        elif callback_data == "sek_presentasi":
+            if context.user_data is not None:
+                context.user_data["presentasi_state"] = "presentasi_topik"
+
+            skill_hint = self._get_presentation_skill_hint()
+
+            await query.edit_message_text(
+                "📊 *Buat Bahan Presentasi*\n\n"
+                "Deskripsikan presentasi yang ingin dibuat:\n\n"
+                "✅ *Contoh:*\n"
+                "• _Presentasi Strategi Digital Transformation 2025 untuk board meeting_\n"
+                "• _Slide produk AI tools untuk client pitch meeting_\n"
+                "• _Presentasi training tim development tentang clean code_\n\n"
+                f"{skill_hint}",
+                parse_mode="Markdown",
+            )
+
+        elif callback_data == "presentasi_accept":
+            if not query or not context.user_data:
+                return
+            draft = context.user_data.get("presentasi_draft", {})
+            outline = draft.get("outline", "")
+            if not outline:
+                await query.edit_message_text("❌ Outline tidak ditemukan")
+                return
+
+            topik = draft.get("topik", "Presentasi")
+            await query.edit_message_text(
+                f"✅ *Outline Presentasi Diterima*\n\n"
+                f"📊 Topik: _{topik}_\n\n"
+                f"Anda bisa:\n"
+                f"• Copy outline ini ke PowerPoint\n"
+                f"• Gunakan /sek untuk membuat presentasi baru",
+                parse_mode="Markdown",
+            )
+            context.user_data.pop("presentasi_draft", None)
+            context.user_data.pop("presentasi_state", None)
+
+        elif callback_data == "presentasi_retry":
+            if not query or not context.user_data:
+                return
+            context.user_data["presentasi_state"] = "presentasi_topik"
+            await query.edit_message_text(
+                "📊 *Buat Ulang Presentasi*\n\n"
+                "Deskripsikan presentasi yang ingin dibuat (dengan detail lebih lengkap jika perlu):",
+                parse_mode="Markdown",
+            )
+
+        elif callback_data == "presentasi_cancel":
+            if not query or not context.user_data:
+                return
+            context.user_data.pop("presentasi_draft", None)
+            context.user_data.pop("presentasi_state", None)
+            await query.edit_message_text("❌ Pembuatan presentasi dibatalkan.")
+
         elif callback_data.startswith("sek_"):
             feature = callback_data.split("_")[1]
             await query.edit_message_text(f"⏳ Fitur sekretaris: {feature} akan segera diimplementasikan!")
@@ -2590,6 +2808,87 @@ SELESAI"""
         elif callback_data.startswith("auto_"):
             feature = callback_data.split("_")[1]
             await query.edit_message_text(f"⏳ Fitur Automation: {feature} akan segera diimplementasikan!")
+
+        # ── Export hasil ke format lain ──────────────────────────────────
+        elif callback_data.startswith("export_"):
+            if not query or not context.user_data:
+                return
+            last_result = context.user_data.get("last_result", {})
+            if not last_result:
+                await query.edit_message_text("❌ Tidak ada hasil untuk dikonversi.")
+                return
+
+            export_type = callback_data.split("_")[1]  # surat, pdf, excel, presentasi, sosmed
+            result_text = last_result.get("text", "")
+            result_title = last_result.get("title", "Hasil")
+
+            if export_type == "surat":
+                if context.user_data is not None:
+                    context.user_data["surat_state"] = "surat_brief"
+                    context.user_data["surat_draft"] = {
+                        "isi": result_text,
+                        "perihal": f"Ringkasan {result_title}"
+                    }
+                await query.edit_message_text(
+                    "📄 *Jadikan Surat Resmi*\n\n"
+                    "Hasil riset akan menjadi isi surat.\n"
+                    "Jelaskan tujuan surat:\n"
+                    "_Contoh: Surat penawaran kerjasama berdasarkan riset pasar_",
+                    parse_mode="Markdown",
+                )
+
+            elif export_type == "pdf":
+                await query.edit_message_text("⏳ Membuat PDF...")
+                try:
+                    pdf_path = await generate_document_pdf_async(
+                        title=result_title,
+                        content=result_text,
+                        author="Reflective Koala Agent"
+                    )
+                    with open(pdf_path, "rb") as f:
+                        if query.message and query.message.chat:
+                            await query.message.chat.send_document(
+                                document=f,
+                                filename=f"{result_title[:40]}.pdf",
+                                caption=f"📄 {result_title}",
+                            )
+                    await query.delete_message()
+                except Exception as e:
+                    logger.exception("PDF export error: %s", e)
+                    await query.edit_message_text(f"❌ Gagal membuat PDF: {e}")
+
+            elif export_type == "excel":
+                await query.edit_message_text(
+                    "⏳ Membuat Excel...\n\n"
+                    "_Fitur Excel sedang dalam pengembangan._\n"
+                    "Untuk sekarang, gunakan format PDF atau copy teks langsung ke Excel.",
+                    parse_mode="Markdown",
+                )
+
+            elif export_type == "presentasi":
+                if context.user_data is not None:
+                    context.user_data["presentasi_state"] = "presentasi_topic_from_result"
+                    context.user_data["presentasi_draft"] = {
+                        "source_result": result_text,
+                        "source_title": result_title,
+                    }
+                await query.edit_message_text(
+                    "🎨 *Jadikan Presentasi*\n\n"
+                    "Claude akan membuat outline presentasi dari hasil riset ini.\n"
+                    "Apakah ingin menyesuaikan fokus presentasi?\n\n"
+                    "_Enter untuk gunakan topik otomatis, atau tulis penyesuaian._",
+                    parse_mode="Markdown",
+                )
+                if context.user_data is not None:
+                    context.user_data["presentasi_state"] = "presentasi_topik"
+
+            elif export_type == "sosmed":
+                await query.edit_message_text(
+                    "📱 *Jadikan Konten Sosial Media + Gambar*\n\n"
+                    "Pilih platform:\n\n"
+                    "[Instagram] [TikTok] [LinkedIn] [Twitter]",
+                    parse_mode="Markdown",
+                )
 
     async def error_handler(self, update: object, context: ContextTypes.DEFAULT_TYPE):
         # Log exception agar bisa dilacak kenapa pesan tidak memunculkan reply.
@@ -2863,8 +3162,8 @@ SELESAI"""
         # surat_callback hanya untuk aksi akhir (download/email/batal)
         app.add_handler(CallbackQueryHandler(self.improve_callback, pattern="^improve_"))
         app.add_handler(CallbackQueryHandler(self.surat_callback, pattern="^surat_(download|email|batal)$"))
-        # module_callback: sek_, rnd_, surat_mode_ (mode pilihan surat), dll
-        app.add_handler(CallbackQueryHandler(self.module_callback, pattern="^(sek_|rnd_|sosmed_|res_|auto_|surat_mode_)"))
+        # module_callback: sek_, rnd_, surat_mode_, export_, presentasi_, dll
+        app.add_handler(CallbackQueryHandler(self.module_callback, pattern="^(sek_|rnd_|sosmed_|res_|auto_|surat_mode_|export_|presentasi_)"))
 
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.text_message))
         app.add_handler(MessageHandler(filters.Document.ALL, self.document_handler))
