@@ -162,11 +162,47 @@ goto UPDATE_MAIN
 
 :UPDATE_GIT
 echo.
-echo [GIT] Pull origin master...
-git pull origin master
+echo [GIT] Update kode dari GitHub (origin/master)...
+echo       Perubahan lokal Anda diamankan dulu (auto-stash), tidak akan hilang.
+
+REM Simpan perubahan lokal (termasuk file baru) agar pull tidak gagal diam-diam.
+set "STASHED=0"
+git stash push -u -m "auto-stash-start-bat" >nul 2>&1
+if not errorlevel 1 set "STASHED=1"
+
+git fetch origin master
 if errorlevel 1 (
-  echo [WARN] Git pull gagal. Cek git dan koneksi internet.
+  echo [ERROR] Gagal fetch dari GitHub. Cek koneksi internet / git.
+  if "!STASHED!"=="1" git stash pop >nul 2>&1
+  pause
+  goto MENU
 )
+
+REM Samakan kode dengan GitHub secara pasti (anti gagal merge).
+REM Aman: folder data/ di-gitignore, jadi skill & database tidak terhapus.
+git reset --hard origin/master
+if errorlevel 1 (
+  echo [ERROR] Gagal menyamakan ke origin/master.
+  if "!STASHED!"=="1" git stash pop >nul 2>&1
+  pause
+  goto MENU
+)
+
+echo [OK] Kode inti sudah sama dengan GitHub.
+if "!STASHED!"=="1" (
+  echo [GIT] Mengembalikan perubahan lokal Anda...
+  git stash pop >nul 2>&1
+  if errorlevel 1 (
+    echo [WARN] Ada bentrok saat mengembalikan perubahan lokal.
+    echo        Perubahan Anda masih tersimpan: jalankan "git stash list".
+  ) else (
+    echo [OK] Perubahan lokal dikembalikan.
+  )
+)
+echo.
+echo Versi terpasang sekarang:
+git --no-pager log --oneline -1
+echo.
 pause
 goto MENU
 
