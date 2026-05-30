@@ -7,6 +7,7 @@ from src.database import set_user_model, get_user_model, get_user_usage, get_usa
 from src.config import settings
 from src.modules.rnd import RndHandler
 from src.modules.karir import KarirHandler
+from src.modules.computer import ComputerHandler
 from src.modules.agen import AgenHandler
 from src.modules.hermes import HermesHandler
 from src.agent.agent24 import Agent24Runner, create_task, list_tasks, cancel_task
@@ -32,6 +33,7 @@ class TelegramGateway:
         self.agen_module  = AgenHandler()
         self.hermes       = HermesHandler()
         self.surat_gen    = SuratGenerator(settings.output_dir)
+        self.pc_module    = ComputerHandler()
 
         # ── 24/7 Agent Runner ─────────────────────────────────────────────────
         # Diinisialisasi tapi belum distart; start() dipanggil dari main.py
@@ -859,6 +861,21 @@ Ketik pertanyaan bebas kapan saja! 🤖"""
         pdf_state = (context.user_data or {}).get("pdf_state")
         if pdf_state:
             await self._handle_pdf_state(update, context, pdf_state, user_message)
+            return
+
+        # ── PC Control state machine ───────────────────────────────────────
+        pc_state = (context.user_data or {}).get("pc_state")
+        if pc_state:
+            if context.user_data is not None:
+                context.user_data.pop("pc_state", None)
+            await update.message.chat.send_action("typing")
+            try:
+                result = await self._handle_pc_state(pc_state, user_message, update, context)
+                if result:
+                    await self._send_long(update, result)
+            except Exception as e:
+                logger.error(f"PC control error: {e}")
+                await update.message.reply_text(f"❌ Error: {e}")
             return
 
         # ── Deteksi "buatkan PDF dari hasil diatas" ────────────────────────
@@ -3734,6 +3751,213 @@ INSTRUKSI:
             feature = callback_data.split("_")[1]
             await query.edit_message_text(f"⏳ Fitur Automation: {feature} akan segera diimplementasikan!")
 
+        # ── Computer Control callbacks ─────────────────────────────────────
+        elif callback_data == "pc_screenshot":
+            await query.edit_message_text("📸 Mengambil screenshot...")
+            try:
+                img_bytes = await self.pc_module.screenshot()
+                await query.message.reply_photo(photo=img_bytes, caption="📸 Screenshot")
+            except Exception as e:
+                await query.message.reply_text(f"❌ Gagal screenshot: {e}")
+
+        elif callback_data == "pc_sysinfo":
+            await query.edit_message_text("⏳ Mengambil info sistem...")
+            try:
+                info = await self.pc_module.get_system_info()
+                await query.message.reply_text(info, parse_mode="Markdown")
+            except Exception as e:
+                await query.message.reply_text(f"❌ {e}")
+
+        elif callback_data == "pc_proses":
+            await query.edit_message_text("⏳ Mengambil daftar proses...")
+            try:
+                result = await self.pc_module.list_processes()
+                await query.message.reply_text(result, parse_mode="Markdown")
+            except Exception as e:
+                await query.message.reply_text(f"❌ {e}")
+
+        elif callback_data == "pc_windows":
+            try:
+                result = await self.pc_module.list_windows()
+                await query.edit_message_text(result, parse_mode="Markdown")
+            except Exception as e:
+                await query.edit_message_text(f"❌ {e}")
+
+        elif callback_data == "pc_clipboard":
+            try:
+                result = await self.pc_module.get_clipboard()
+                await query.edit_message_text(result, parse_mode="Markdown")
+            except Exception as e:
+                await query.edit_message_text(f"❌ {e}")
+
+        elif callback_data == "pc_volup":
+            try:
+                result = await self.pc_module.volume_up(5)
+                await query.edit_message_text(f"🔊 {result}")
+            except Exception as e:
+                await query.edit_message_text(f"❌ {e}")
+
+        elif callback_data == "pc_voldown":
+            try:
+                result = await self.pc_module.volume_down(5)
+                await query.edit_message_text(f"🔉 {result}")
+            except Exception as e:
+                await query.edit_message_text(f"❌ {e}")
+
+        elif callback_data == "pc_mute":
+            try:
+                result = await self.pc_module.mute_toggle()
+                await query.edit_message_text(f"🔇 {result}")
+            except Exception as e:
+                await query.edit_message_text(f"❌ {e}")
+
+        elif callback_data == "pc_lock":
+            try:
+                result = await self.pc_module.system_lock()
+                await query.edit_message_text(f"🔒 {result}")
+            except Exception as e:
+                await query.edit_message_text(f"❌ {e}")
+
+        elif callback_data == "pc_sleep":
+            await query.edit_message_text("😴 Komputer akan masuk mode sleep...")
+            try:
+                result = await self.pc_module.system_sleep()
+                await query.message.reply_text(f"✅ {result}")
+            except Exception as e:
+                await query.message.reply_text(f"❌ {e}")
+
+        elif callback_data == "pc_restart":
+            keyboard = [
+                [InlineKeyboardButton("✅ Ya, Restart Sekarang", callback_data="pc_restart_confirm")],
+                [InlineKeyboardButton("❌ Batal", callback_data="pc_cancel")],
+            ]
+            await query.edit_message_text(
+                "⚠️ *Konfirmasi Restart*\n\nApakah Anda yakin ingin merestart komputer?",
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode="Markdown"
+            )
+
+        elif callback_data == "pc_restart_confirm":
+            await query.edit_message_text("🔄 Merestart komputer dalam 5 detik...")
+            try:
+                result = await self.pc_module.system_restart(delay=5)
+                await query.message.reply_text(f"✅ {result}")
+            except Exception as e:
+                await query.message.reply_text(f"❌ {e}")
+
+        elif callback_data == "pc_shutdown":
+            keyboard = [
+                [InlineKeyboardButton("⛔ Ya, Shutdown Sekarang", callback_data="pc_shutdown_confirm")],
+                [InlineKeyboardButton("❌ Batal", callback_data="pc_cancel")],
+            ]
+            await query.edit_message_text(
+                "⚠️ *Konfirmasi Shutdown*\n\nApakah Anda yakin ingin mematikan komputer?",
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode="Markdown"
+            )
+
+        elif callback_data == "pc_shutdown_confirm":
+            await query.edit_message_text("⛔ Mematikan komputer dalam 5 detik...")
+            try:
+                result = await self.pc_module.system_shutdown(delay=5)
+                await query.message.reply_text(f"✅ {result}")
+            except Exception as e:
+                await query.message.reply_text(f"❌ {e}")
+
+        elif callback_data == "pc_cancel":
+            try:
+                result = await self.pc_module.system_cancel_shutdown()
+                await query.edit_message_text(f"✅ {result}")
+            except Exception:
+                await query.edit_message_text("✅ Dibatalkan")
+
+        elif callback_data == "pc_click":
+            context.user_data["pc_state"] = "click"
+            await query.edit_message_text(
+                "🖱️ *Klik Mouse*\n\nKetik koordinat X,Y:\n_Contoh: `960,540` (tengah layar 1920×1080)_",
+                parse_mode="Markdown"
+            )
+
+        elif callback_data == "pc_move":
+            context.user_data["pc_state"] = "move"
+            await query.edit_message_text(
+                "↔️ *Gerak Mouse*\n\nKetik koordinat X,Y:\n_Contoh: `100,200`_",
+                parse_mode="Markdown"
+            )
+
+        elif callback_data == "pc_type":
+            context.user_data["pc_state"] = "type"
+            await query.edit_message_text(
+                "⌨️ *Ketik Teks*\n\nKetik teks yang ingin diketik ke komputer:",
+                parse_mode="Markdown"
+            )
+
+        elif callback_data == "pc_key":
+            context.user_data["pc_state"] = "key"
+            await query.edit_message_text(
+                "🔑 *Tekan Tombol*\n\nKetik nama tombol:\n"
+                "_Contoh: `enter`, `escape`, `f5`, `delete`, `tab`, `space`_",
+                parse_mode="Markdown"
+            )
+
+        elif callback_data == "pc_hotkey":
+            context.user_data["pc_state"] = "hotkey"
+            await query.edit_message_text(
+                "⌨️ *Hotkey / Kombinasi Tombol*\n\nKetik kombinasi dengan `+`:\n"
+                "_Contoh: `ctrl+c`, `alt+f4`, `win+d`, `ctrl+alt+del`, `ctrl+shift+esc`_",
+                parse_mode="Markdown"
+            )
+
+        elif callback_data == "pc_scroll":
+            context.user_data["pc_state"] = "scroll"
+            await query.edit_message_text(
+                "🖱️ *Scroll*\n\nKetik jumlah scroll (positif = atas, negatif = bawah):\n"
+                "_Contoh: `5` (naik) atau `-3` (turun)_",
+                parse_mode="Markdown"
+            )
+
+        elif callback_data == "pc_kill":
+            context.user_data["pc_state"] = "kill"
+            await query.edit_message_text(
+                "❌ *Hentikan Proses*\n\nKetik nama atau PID proses:\n"
+                "_Contoh: `chrome.exe`, `notepad.exe`, `1234`_",
+                parse_mode="Markdown"
+            )
+
+        elif callback_data == "pc_open":
+            context.user_data["pc_state"] = "open"
+            await query.edit_message_text(
+                "📂 *Buka File / Aplikasi / URL*\n\nKetik path atau URL:\n"
+                "_Contoh: `C:\\Users\\User\\Desktop\\file.pdf` atau `https://google.com` atau `notepad`_",
+                parse_mode="Markdown"
+            )
+
+        elif callback_data == "pc_focus":
+            context.user_data["pc_state"] = "focus"
+            await query.edit_message_text(
+                "🎯 *Fokus Jendela*\n\nKetik judul jendela (sebagian saja):\n"
+                "_Contoh: `Chrome`, `Notepad`, `Visual Studio`_",
+                parse_mode="Markdown"
+            )
+
+        elif callback_data == "pc_python":
+            context.user_data["pc_state"] = "python"
+            await query.edit_message_text(
+                "🐍 *Run Python Script*\n\n"
+                "⚠️ _Script dijalankan langsung di komputer Anda_\n\n"
+                "Ketik kode Python yang ingin dijalankan:",
+                parse_mode="Markdown"
+            )
+
+        elif callback_data == "pc_shell":
+            context.user_data["pc_state"] = "shell"
+            await query.edit_message_text(
+                "💻 *Run Shell Command*\n\n"
+                "⚠️ _Perintah dijalankan di komputer Anda_\n\n"
+                "Ketik perintah shell/PowerShell:",
+                parse_mode="Markdown"
+            )
+
         # ── Export hasil ke format lain ──────────────────────────────────
         elif callback_data.startswith("export_"):
             if not query or not context.user_data:
@@ -4141,6 +4365,107 @@ AKTA_NOTARIS: [nomor akta, notaris, tanggal]
             caption=msg.caption or "",
         )
 
+    async def pc_control(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user_id = update.effective_user.id
+        if not await check_user_allowed(user_id):
+            return
+
+        keyboard = [
+            [InlineKeyboardButton("📸 Screenshot", callback_data="pc_screenshot"),
+             InlineKeyboardButton("ℹ️ Info Sistem", callback_data="pc_sysinfo")],
+            [InlineKeyboardButton("🖱️ Klik Mouse", callback_data="pc_click"),
+             InlineKeyboardButton("↔️ Gerak Mouse", callback_data="pc_move")],
+            [InlineKeyboardButton("⌨️ Ketik Teks", callback_data="pc_type"),
+             InlineKeyboardButton("🔑 Tekan Tombol", callback_data="pc_key")],
+            [InlineKeyboardButton("⌨️ Hotkey", callback_data="pc_hotkey"),
+             InlineKeyboardButton("🖱️ Scroll", callback_data="pc_scroll")],
+            [InlineKeyboardButton("📋 Lihat Proses", callback_data="pc_proses"),
+             InlineKeyboardButton("❌ Hentikan Proses", callback_data="pc_kill")],
+            [InlineKeyboardButton("📋 Clipboard", callback_data="pc_clipboard"),
+             InlineKeyboardButton("📂 Buka File/App", callback_data="pc_open")],
+            [InlineKeyboardButton("🔊 Vol +", callback_data="pc_volup"),
+             InlineKeyboardButton("🔉 Vol -", callback_data="pc_voldown"),
+             InlineKeyboardButton("🔇 Mute", callback_data="pc_mute")],
+            [InlineKeyboardButton("🖥️ Jendela Aktif", callback_data="pc_windows"),
+             InlineKeyboardButton("🎯 Fokus Jendela", callback_data="pc_focus")],
+            [InlineKeyboardButton("🐍 Run Python", callback_data="pc_python"),
+             InlineKeyboardButton("💻 Run Shell", callback_data="pc_shell")],
+            [InlineKeyboardButton("🔒 Kunci Layar", callback_data="pc_lock"),
+             InlineKeyboardButton("😴 Sleep", callback_data="pc_sleep")],
+            [InlineKeyboardButton("🔄 Restart", callback_data="pc_restart"),
+             InlineKeyboardButton("⛔ Shutdown", callback_data="pc_shutdown")],
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text(
+            "🖥️ *Kontrol Komputer*\n\n"
+            "Pilih aksi yang ingin dilakukan:\n"
+            "_⚠️ Failsafe: gerak mouse ke pojok kiri atas untuk berhenti darurat_",
+            reply_markup=reply_markup,
+            parse_mode="Markdown"
+        )
+
+    async def _handle_pc_state(self, state: str, user_input: str, update: Update, context) -> str | None:
+        """Proses input teks untuk state machine PC control."""
+        pc = self.pc_module
+
+        if state == "type":
+            return await pc.keyboard_type(user_input)
+
+        elif state == "key":
+            return await pc.keyboard_press(user_input.lower().strip())
+
+        elif state == "hotkey":
+            keys = [k.strip().lower() for k in user_input.replace("+", " ").split()]
+            return await pc.keyboard_hotkey(keys)
+
+        elif state == "click":
+            try:
+                parts = user_input.replace(" ", "").split(",")
+                x, y = int(parts[0]), int(parts[1])
+                btn = "right" if len(parts) > 2 and "right" in parts[2] else "left"
+                clicks = 2 if len(parts) > 2 and "double" in parts[2] else 1
+                return await pc.mouse_click(x, y, button=btn, clicks=clicks)
+            except (ValueError, IndexError):
+                return "❌ Format salah. Gunakan: `X,Y` contoh: `960,540`"
+
+        elif state == "move":
+            try:
+                parts = user_input.replace(" ", "").split(",")
+                x, y = int(parts[0]), int(parts[1])
+                return await pc.mouse_move(x, y)
+            except (ValueError, IndexError):
+                return "❌ Format salah. Gunakan: `X,Y` contoh: `100,200`"
+
+        elif state == "scroll":
+            try:
+                amount = int(user_input.strip())
+                return await pc.mouse_scroll(amount)
+            except ValueError:
+                return "❌ Masukkan angka. Contoh: `5` atau `-3`"
+
+        elif state == "kill":
+            return await pc.kill_process(user_input.strip())
+
+        elif state == "open":
+            return await pc.open_path(user_input.strip())
+
+        elif state == "focus":
+            return await pc.focus_window(user_input.strip())
+
+        elif state == "python":
+            msg = await update.message.reply_text("🐍 Menjalankan script Python...")
+            result = await pc.run_python(user_input)
+            await msg.delete()
+            return result
+
+        elif state == "shell":
+            msg = await update.message.reply_text("💻 Menjalankan perintah shell...")
+            result = await pc.run_shell(user_input)
+            await msg.delete()
+            return result
+
+        return None
+
     async def debug_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Fallback untuk mendeteksi command yang tidak ter-match ke handler spesifik.
         msg = update.message
@@ -4203,6 +4528,8 @@ AKTA_NOTARIS: [nomor akta, notaris, tanggal]
         app.add_handler(CommandHandler("memory", self.memori_cmd))
         app.add_handler(CommandHandler("agen24", self.agen24_cmd))
         app.add_handler(CommandHandler("jadwal", self.agen24_cmd))
+        app.add_handler(CommandHandler("pc", self.pc_control))
+        app.add_handler(CommandHandler("komputer", self.pc_control))
 
         app.add_handler(CallbackQueryHandler(self.provider_callback, pattern="^provider_"))
         app.add_handler(CallbackQueryHandler(self.orgroup_callback, pattern="^orgroup_"))
@@ -4215,7 +4542,7 @@ AKTA_NOTARIS: [nomor akta, notaris, tanggal]
         app.add_handler(CallbackQueryHandler(self.improve_callback, pattern="^improve_"))
         app.add_handler(CallbackQueryHandler(self.surat_callback, pattern="^surat_(download|email|batal)$"))
         # module_callback: sek_, rnd_, surat_mode_, export_, presentasi_, dll
-        app.add_handler(CallbackQueryHandler(self.module_callback, pattern="^(sek_|rnd_|sosmed_|res_|auto_|surat_mode_|export_|presentasi_)"))
+        app.add_handler(CallbackQueryHandler(self.module_callback, pattern="^(sek_|rnd_|sosmed_|res_|auto_|surat_mode_|export_|presentasi_|pc_)"))
 
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.text_message))
         app.add_handler(MessageHandler(filters.Document.ALL, self.document_handler))
