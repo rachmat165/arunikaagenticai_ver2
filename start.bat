@@ -23,7 +23,7 @@ echo  1. Start Bot Telegram
 echo  2. Update Aplikasi (GitHub + Python packages)
 echo  3. Setup Model AI
 echo  4. Hapus lock file (jika bot stuck)
-echo  5. Update Hermes Agent (cek release terbaru)
+echo  5. Update Hermes Agent (otomatis - download skill terbaru)
 echo  6. Update Claude Skills (alirezarezvani/claude-skills)
 echo  0. Keluar
 echo =========================================================
@@ -210,8 +210,8 @@ goto MENU
 :UPDATE_HERMES
 cls
 echo =========================================================
-echo  [INFO] Update Hermes Agent
-echo  Sumber: github.com/NousResearch/hermes-agent
+echo  [INFO] Update Hermes Agent (otomatis)
+echo  Sumber: github.com/NousResearch/hermes-agent/releases
 echo =========================================================
 echo.
 
