@@ -165,6 +165,75 @@ TOOL_SCHEMAS = _LETTA_SCHEMAS + [
             "required": ["name", "description", "content"]
         }
     },
+    {
+        "name": "list_cron_jobs",
+        "description": (
+            "Lihat daftar cron job / tugas terjadwal milik user (sistem Agen 24/7). "
+            "Gunakan untuk mengetahui job apa saja yang sudah dijadwalkan, jam berapa, "
+            "kapan terakhir jalan (last_run), dan kapan jadwal berikutnya (next_run). "
+            "WAJIB panggil ini dulu saat user menyebut 'cron job yang sudah ada', "
+            "'tugas terjadwal', atau ingin menjalankan job yang belum jalan."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "run_cron_job",
+        "description": (
+            "Jalankan SEKARANG cron job yang sudah terjadwal (eksekusi tugasnya secara nyata). "
+            "Pilih salah satu: 'job_id' untuk satu job tertentu, atau 'which'='due' untuk "
+            "semua job aktif yang sudah jatuh tempo / belum jalan, atau 'which'='all' untuk "
+            "semua job aktif. Gunakan saat user minta 'jalankan cron job yang belum jalan'. "
+            "Setelah dijalankan, last_run & next_run diperbarui otomatis."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "job_id": {
+                    "type": "string",
+                    "description": "ID job (8 karakter) yang ingin dijalankan. Kosongkan jika memakai 'which'.",
+                },
+                "which": {
+                    "type": "string",
+                    "enum": ["due", "all"],
+                    "description": "'due' = semua job aktif yang next_run <= sekarang (belum jalan); 'all' = semua job aktif.",
+                },
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "create_cron_job",
+        "description": (
+            "Buat cron job / tugas terjadwal baru untuk Agen 24/7. "
+            "Format jadwal yang didukung: 'setiap hari 08:00', 'setiap senin 09:00', "
+            "'setiap 2 jam', 'sekali 2026-06-01 10:00'."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task_desc": {
+                    "type": "string",
+                    "description": "deskripsi tugas yang akan dijalankan otomatis sesuai jadwal",
+                },
+                "schedule": {
+                    "type": "string",
+                    "description": "jadwal natural language, mis. 'setiap hari 09:00'",
+                },
+            },
+            "required": ["task_desc", "schedule"],
+        },
+    },
+    {
+        "name": "cancel_cron_job",
+        "description": "Batalkan/hapus cron job berdasarkan job_id (ambil id dari list_cron_jobs).",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "job_id": {"type": "string", "description": "ID job (8 karakter) yang akan dibatalkan"},
+            },
+            "required": ["job_id"],
+        },
+    },
 ]
 
 
@@ -175,7 +244,8 @@ class ToolExecutor:
             if settings.firecrawl_api_key else None
         )
 
-    async def execute(self, tool_name: str, tool_input: dict, router=None, on_progress=None, on_file=None, memory=None) -> str:
+    async def execute(self, tool_name: str, tool_input: dict, router=None, on_progress=None, on_file=None, memory=None,
+                      db_path=None, user_id: int = 0, chat_id: int = 0, agent_runner=None) -> str:
         """Eksekusi satu tool call. Return string hasil."""
         try:
             # ── Letta Memory Tools ───────────────────────────────────────────
@@ -200,11 +270,129 @@ class ToolExecutor:
                 return await self._generate_pdf(on_file=on_file, **tool_input)
             elif tool_name == "create_skill":
                 return self._create_skill(**tool_input)
+            # ── Cron / Agen 24/7 Tools ───────────────────────────────────────
+            elif tool_name == "list_cron_jobs":
+                return await self._list_cron_jobs(db_path, user_id)
+            elif tool_name == "run_cron_job":
+                return await self._run_cron_job(db_path, user_id, agent_runner,
+                                                on_progress=on_progress, **tool_input)
+            elif tool_name == "create_cron_job":
+                return await self._create_cron_job(db_path, user_id, chat_id, **tool_input)
+            elif tool_name == "cancel_cron_job":
+                return await self._cancel_cron_job(db_path, user_id, **tool_input)
             else:
                 return f"❌ Tool '{tool_name}' tidak dikenal."
         except Exception as e:
             logger.exception("Tool %s error: %s", tool_name, e)
             return f"❌ Error menjalankan tool {tool_name}: {e}"
+
+    # ── Cron / Agen 24/7 tool handlers ──────────────────────────────────────
+    async def _list_cron_jobs(self, db_path, user_id: int) -> str:
+        if not db_path:
+            return "❌ Akses cron job tidak tersedia dalam sesi ini."
+        from src.agent.agent24 import list_tasks
+        rows = await list_tasks(db_path, user_id)
+        if not rows:
+            return "📭 Belum ada cron job / tugas terjadwal. Buat dengan create_cron_job."
+        lines = [f"📋 Ada {len(rows)} cron job:"]
+        for (id_, desc, schedule, next_run, last_run, status) in rows:
+            nr = (next_run or "")[:16].replace("T", " ")
+            lr = (last_run or "")[:16].replace("T", " ") if last_run else "belum pernah"
+            lines.append(
+                f"• [{id_}] {str(desc)[:60]}\n"
+                f"   jadwal: {schedule} | berikutnya: {nr} | terakhir: {lr} | status: {status}"
+            )
+        return "\n".join(lines)
+
+    async def _run_cron_job(self, db_path, user_id: int, agent_runner,
+                            job_id: str = "", which: str = "", on_progress=None) -> str:
+        if not db_path:
+            return "❌ Akses cron job tidak tersedia dalam sesi ini."
+        if agent_runner is None:
+            return "❌ Runner tidak tersedia untuk menjalankan job dalam sesi ini."
+        from datetime import datetime
+        import aiosqlite
+        from src.agent.agent24 import list_tasks, compute_next_run
+
+        rows = await list_tasks(db_path, user_id)
+        now = datetime.now()
+        selected = []
+        for (id_, desc, schedule, next_run, last_run, status) in rows:
+            if status != "active":
+                continue
+            if job_id:
+                if id_ == job_id:
+                    selected.append((id_, desc, schedule))
+                    break
+                continue
+            if which == "all":
+                selected.append((id_, desc, schedule))
+            else:  # default 'due' — belum jalan / sudah jatuh tempo
+                try:
+                    is_due = bool(next_run) and datetime.fromisoformat(next_run) <= now
+                except Exception:
+                    is_due = True
+                if is_due:
+                    selected.append((id_, desc, schedule))
+
+        if not selected:
+            if job_id:
+                return f"❌ Cron job '{job_id}' tidak ditemukan / tidak aktif."
+            return "✅ Tidak ada cron job yang perlu dijalankan (semua sudah up-to-date)."
+
+        results = []
+        for idx, (id_, desc, schedule) in enumerate(selected, start=1):
+            if on_progress:
+                try:
+                    await on_progress(f"⏰ Menjalankan cron job {idx}/{len(selected)}: {str(desc)[:50]}…")
+                except Exception:
+                    pass
+            try:
+                out = await agent_runner(user_id, desc)
+            except Exception as e:
+                out = f"Error: {e}"
+            out_str = str(out)
+            # Perbarui last_run + next_run (atau completed untuk 'sekali')
+            nr = compute_next_run(schedule, now)
+            async with aiosqlite.connect(db_path) as db:
+                if nr:
+                    await db.execute(
+                        "UPDATE scheduled_tasks SET last_run=?, last_result=?, next_run=? WHERE id=?",
+                        (now.isoformat(), out_str[:500], nr.isoformat(), id_),
+                    )
+                else:
+                    await db.execute(
+                        "UPDATE scheduled_tasks SET last_run=?, last_result=?, status='completed' WHERE id=?",
+                        (now.isoformat(), out_str[:500], id_),
+                    )
+                await db.commit()
+            results.append(f"▶️ [{id_}] {str(desc)[:50]}\n{out_str[:900]}")
+
+        header = f"✅ Selesai menjalankan {len(selected)} cron job:\n"
+        return header + "\n\n".join(results)
+
+    async def _create_cron_job(self, db_path, user_id: int, chat_id: int,
+                               task_desc: str, schedule: str) -> str:
+        if not db_path:
+            return "❌ Akses cron job tidak tersedia dalam sesi ini."
+        from src.agent.agent24 import create_task
+        res = await create_task(db_path, user_id, chat_id, task_desc, schedule)
+        if "error" in res:
+            return f"❌ {res['error']}"
+        return (
+            f"✅ Cron job dibuat!\n"
+            f"• ID: {res['id']}\n"
+            f"• Tugas: {res['task']}\n"
+            f"• Jadwal: {res['schedule']}\n"
+            f"• Jalan berikutnya: {res['next_run']}"
+        )
+
+    async def _cancel_cron_job(self, db_path, user_id: int, job_id: str) -> str:
+        if not db_path:
+            return "❌ Akses cron job tidak tersedia dalam sesi ini."
+        from src.agent.agent24 import cancel_task
+        ok = await cancel_task(db_path, job_id, user_id)
+        return f"✅ Cron job '{job_id}' dibatalkan." if ok else f"❌ Cron job '{job_id}' tidak ditemukan."
 
     async def _generate_pdf(self, title: str, content: str, subtitle: str = "", on_file=None) -> str:
         """Generate PDF dari konten dan opsional kirim ke Telegram via on_file callback."""

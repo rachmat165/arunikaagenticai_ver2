@@ -18,12 +18,16 @@ logger = logging.getLogger(__name__)
 MAX_TOOL_ROUNDS = 8
 
 TOOL_ICONS = {
-    "web_search":   "🌐",
-    "read_file":    "📂",
-    "write_file":   "💾",
-    "remember":     "🧠",
-    "run_python":   "🐍",
-    "create_skill": "⚡",
+    "web_search":     "🌐",
+    "read_file":      "📂",
+    "write_file":     "💾",
+    "remember":       "🧠",
+    "run_python":     "🐍",
+    "create_skill":   "⚡",
+    "list_cron_jobs": "📋",
+    "run_cron_job":   "⏰",
+    "create_cron_job":"🗓️",
+    "cancel_cron_job":"🗑️",
 }
 
 def _h(text: str) -> str:
@@ -91,6 +95,17 @@ Anda memiliki akses ke tools berikut untuk menyelesaikan tugas:
 - remember: simpan fakta penting ke memori permanen
 - run_python: jalankan kode Python
 - create_skill: buat skill baru untuk bot
+- list_cron_jobs: lihat daftar cron job / tugas terjadwal (Agen 24/7) yang sudah ada
+- run_cron_job: JALANKAN cron job yang sudah ada sekarang (job_id tertentu / which='due' utk yang belum jalan / which='all')
+- create_cron_job: buat tugas terjadwal baru
+- cancel_cron_job: batalkan cron job
+
+ATURAN CRON JOB / TUGAS TERJADWAL — WAJIB:
+- Jika user minta "jalankan cron job yang belum jalan" → JANGAN beri tutorial crontab.
+  Panggil list_cron_jobs dulu untuk melihat job yang ada, lalu run_cron_job (which='due'
+  atau job_id tertentu) untuk benar-benar menjalankannya.
+- Jangan pernah menyuruh user mengetik 'crontab -e' — bot ini memakai sistem Agen 24/7
+  internal, bukan crontab Linux. Gunakan tools cron di atas.
 
 KEMAMPUAN read_file:
 ✅ Bisa baca dari path absolut Windows: P:\\Folder\\file.pdf, C:\\Users\\nama\\doc.docx
@@ -189,6 +204,9 @@ class HermesHandler:
         on_file: Optional[Callable] = None,
         user_id: int = 0,
         memory=None,
+        chat_id: int = 0,
+        db_path: Optional[str] = None,
+        agent_runner: Optional[Callable] = None,
     ) -> str:
         """
         Jalankan Hermes Agent Loop:
@@ -260,7 +278,9 @@ class HermesHandler:
 
                 tool_result = await self.executor.execute(
                     name, inp, router=router, on_progress=_tool_progress,
-                    on_file=on_file, memory=memory
+                    on_file=on_file, memory=memory,
+                    db_path=db_path, user_id=user_id, chat_id=chat_id,
+                    agent_runner=agent_runner,
                 )
 
                 history.append((tool_round, name, "✅"))

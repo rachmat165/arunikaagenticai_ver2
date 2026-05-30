@@ -1784,6 +1784,9 @@ Tulis langsung dokumennya tanpa prefix penjelasan."""
                 on_file=on_file,
                 user_id=user_id,
                 memory=mem,
+                chat_id=update.effective_chat.id,
+                db_path=self.db_path,
+                agent_runner=self._agent_runner_callback,
             )
             try:
                 await msg.edit_text(
